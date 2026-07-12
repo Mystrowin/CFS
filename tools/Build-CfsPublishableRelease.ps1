@@ -89,6 +89,12 @@ foreach ($file in @('.gitignore', 'Directory.Build.props', 'LICENSE.txt', 'READM
 foreach ($directory in @('docs', 'packaging', 'src', 'tests', 'third_party', 'tools')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot $directory) -Destination (Join-Path $sourceFolder $directory) -Recurse -Force
 }
+$websiteSource = Join-Path $repoRoot 'website'
+if (Test-Path -LiteralPath $websiteSource) {
+    $websiteDestination = Join-Path $sourceFolder 'website'
+    & robocopy $websiteSource $websiteDestination /E /XD node_modules dist .vinext .wrangler .git coverage outputs work /XF '*.log' '*.tmp' '.env*' /NFL /NDL /NJH /NJS /NP
+    if ($LASTEXITCODE -gt 7) { throw "Website source copy failed with robocopy exit code $LASTEXITCODE." }
+}
 
 # Formatting happens only in the publishable copy so the working tree remains untouched.
 if (-not $SkipFormat) {
@@ -106,7 +112,7 @@ if (-not $SkipFormat) {
 # Formatting/restoration may create build directories; never publish them.
 Get-ChildItem -LiteralPath $sourceFolder -Recurse -Force -Directory |
     Where-Object {
-        $_.Name -in @('.git', 'dist', '.vs') -or
+        $_.Name -in @('.git', 'dist', '.vs', 'node_modules', '.vinext', '.wrangler', 'coverage', 'outputs', 'work') -or
         ($_.Name -in @('bin', 'obj') -and $_.FullName -notlike "$sourceFolder\third_party\*")
     } |
     Sort-Object FullName -Descending |
