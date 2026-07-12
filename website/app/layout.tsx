@@ -1,35 +1,13 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 const title = "CFS 0.1.0 Beta — Compressed archives for Windows";
 const description =
   "Download CFS 0.1.0 Beta for Windows: compressed .cfs archives with an Explorer-backed workflow.";
+const siteUrl = "https://mystrowin.github.io/CFS/";
 
-export async function generateMetadata(): Promise<Metadata> {
-  const requestHeaders = await headers();
-  const host =
-    requestHeaders.get("x-forwarded-host") ??
-    requestHeaders.get("host") ??
-    "localhost:3000";
-  const protocol =
-    requestHeaders.get("x-forwarded-proto") ??
-    (host.startsWith("localhost") ? "http" : "https");
-  const origin = `${protocol}://${host}`;
-
-  return {
-    metadataBase: new URL(origin),
+export const metadata: Metadata = {
+    metadataBase: new URL(siteUrl),
     title,
     description,
     applicationName: "CFS",
@@ -39,11 +17,11 @@ export async function generateMetadata(): Promise<Metadata> {
       type: "website",
       title,
       description,
-      url: origin,
+      url: siteUrl,
       siteName: "CFS",
       images: [
         {
-          url: `${origin}/og.png`,
+          url: `${siteUrl}og.png`,
           width: 1200,
           height: 630,
           alt: "CFS 0.1.0 Beta — compressed archives that open like folders",
@@ -54,10 +32,9 @@ export async function generateMetadata(): Promise<Metadata> {
       card: "summary_large_image",
       title,
       description,
-      images: [`${origin}/og.png`],
+      images: [`${siteUrl}og.png`],
     },
-  };
-}
+};
 
 export default function RootLayout({
   children,
@@ -66,11 +43,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
-        {children}
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
