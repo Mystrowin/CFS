@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <CfsVersion>0.1.0</CfsVersion>
+    <CfsReleaseLabel>Beta</CfsReleaseLabel>
+    <Version>$(CfsVersion)-beta</Version>
+    <AssemblyVersion>$(CfsVersion).0</AssemblyVersion>
+    <FileVersion>$(CfsVersion).0</FileVersion>
+    <InformationalVersion>$(CfsVersion) $(CfsReleaseLabel)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Product>CFS</Product>
+    <Company>Neeraj Pragnya Krishna Vasagiri</Company>
+    <Copyright>Copyright © 2026 Neeraj Pragnya Krishna Vasagiri. All rights reserved.</Copyright>
+    <Description>CFS $(CfsVersion) $(CfsReleaseLabel)</Description>
+  </PropertyGroup>
+</Project>

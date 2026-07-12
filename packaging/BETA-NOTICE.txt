@@ -1,0 +1,11 @@
+CFS 0.1.0 Beta
+
+CFS is experimental beta software.
+
+Do not use CFS as the only copy of important or irreplaceable files. Keep a separate backup of every file stored in a .cfs archive.
+
+This beta may contain bugs involving application compatibility, mounting, saving, performance, or data integrity. Use it only for testing and non-critical files.
+
+Bug-report destination: https://github.com/Mystrowin/CFS/issues
+
+Read README.md and the documents under docs before use.

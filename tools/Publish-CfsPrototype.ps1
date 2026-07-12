@@ -1,0 +1,58 @@
+param(
+    [string]$Configuration = 'Release',
+    [string]$Runtime = 'win-x64',
+    [string]$OutputPath = ''
+)
+
+$ErrorActionPreference = 'Stop'
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+[xml]$props = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'Directory.Build.props')
+$version = $props.Project.PropertyGroup.CfsVersion
+$label = $props.Project.PropertyGroup.CfsReleaseLabel
+$packageName = "CFS-$version-$label-win-x64"
+if ($version -ne '0.1.0' -or $label -ne 'Beta' -or $Runtime -ne 'win-x64') { throw 'This release script currently packages only CFS 0.1.0 Beta for win-x64.' }
+
+$distRoot = Join-Path $repoRoot 'dist'
+if ([string]::IsNullOrWhiteSpace($OutputPath)) { $OutputPath = Join-Path $distRoot $packageName }
+$resolvedOutput = [IO.Path]::GetFullPath($OutputPath)
+$resolvedDist = [IO.Path]::GetFullPath($distRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
+if (-not $resolvedOutput.StartsWith($resolvedDist + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "OutputPath must stay inside $resolvedDist." }
+if ((Split-Path -Leaf $resolvedOutput) -ne $packageName) { throw "Output folder must be named $packageName." }
+$zipPath = Join-Path $distRoot ($packageName + '.zip')
+
+$dotnet = Join-Path $env:USERPROFILE 'scoop\apps\dotnet-sdk\current\dotnet.exe'
+if (-not (Test-Path -LiteralPath $dotnet)) { $dotnet = Join-Path $env:ProgramFiles 'dotnet\dotnet.exe' }
+if (-not (Test-Path -LiteralPath $dotnet)) { throw 'dotnet.exe was not found.' }
+
+if (Test-Path -LiteralPath $resolvedOutput) { Remove-Item -LiteralPath $resolvedOutput -Recurse -Force }
+if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+New-Item -ItemType Directory -Path $resolvedOutput -Force | Out-Null
+
+& $dotnet publish (Join-Path $repoRoot 'src\Cfs.App\Cfs.App.csproj') -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=false -o $resolvedOutput
+if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
+Get-ChildItem -LiteralPath $resolvedOutput -Filter '*.pdb' -File | Remove-Item -Force
+
+Copy-Item -LiteralPath (Join-Path $repoRoot 'tools\Register-CfsFileAssociation.ps1') -Destination (Join-Path $resolvedOutput 'Register-CfsFileAssociation.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md') -Destination (Join-Path $resolvedOutput 'README.md') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'packaging\BETA-NOTICE.txt') -Destination (Join-Path $resolvedOutput 'BETA-NOTICE.txt') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'packaging\THIRD-PARTY-NOTICES.txt') -Destination (Join-Path $resolvedOutput 'THIRD-PARTY-NOTICES.txt') -Force
+
+$packageDocs = @('BETA-QUICK-START.md','INSTALL-UNINSTALL.md','DATA-SAFETY.md','KNOWN-LIMITATIONS.md','BUG-REPORT-TEMPLATE.md','CONTRIBUTOR-ACCESS-POLICY.md','RELEASE-NOTES-0.1.0-BETA.md','on-demand-mount.md','compression.md','PERFORMANCE-BASELINE.md')
+$docsOutput = Join-Path $resolvedOutput 'docs'
+New-Item -ItemType Directory -Path $docsOutput -Force | Out-Null
+foreach ($document in $packageDocs) { Copy-Item -LiteralPath (Join-Path $repoRoot "docs\$document") -Destination (Join-Path $docsOutput $document) -Force }
+
+$performanceReport = Join-Path $repoRoot 'dist\CFS-0.1.0-Beta-performance.json'
+if (-not (Test-Path -LiteralPath $performanceReport)) { throw 'Current performance report is missing. Run Cfs.Performance before packaging.' }
+Copy-Item -LiteralPath $performanceReport -Destination (Join-Path $docsOutput 'CFS-0.1.0-Beta-performance.json') -Force
+
+$licensesOutput = Join-Path $resolvedOutput 'licenses'
+New-Item -ItemType Directory -Path $licensesOutput -Force | Out-Null
+$dotnetRoot = Split-Path -Parent $dotnet
+Copy-Item -LiteralPath (Join-Path $dotnetRoot 'LICENSE.txt') -Destination (Join-Path $licensesOutput 'DOTNET-LICENSE.txt') -Force
+Copy-Item -LiteralPath (Join-Path $dotnetRoot 'ThirdPartyNotices.txt') -Destination (Join-Path $licensesOutput 'DOTNET-THIRD-PARTY-NOTICES.txt') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'third_party\lzma-sdk\DOC\lzma-sdk.txt') -Destination (Join-Path $licensesOutput 'LZMA-SDK-NOTICE.txt') -Force
+
+Compress-Archive -LiteralPath $resolvedOutput -DestinationPath $zipPath -CompressionLevel Optimal
+Write-Host "PUBLISHED_FOLDER=$resolvedOutput"
+Write-Host "PUBLISHED_ZIP=$zipPath"

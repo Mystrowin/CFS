@@ -1,0 +1,13 @@
+bin/
+obj/
+dist/
+
+!third_party/lzma-sdk/bin/
+!third_party/lzma-sdk/bin/x64/
+!third_party/lzma-sdk/bin/x64/7zr.exe
+!third_party/lzma-sdk/bin/x64/cfs-lzma.dll
+
+*.tmp
+*.user
+
+cfs_ai_packet/
