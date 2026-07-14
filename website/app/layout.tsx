@@ -43,6 +43,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head
+        dangerouslySetInnerHTML={{
+          __html:
+            `<!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cefcc54a364625b4ff0bf56c9099fd"}'></script><!-- End Cloudflare Web Analytics -->`,
+        }}
+      />
       <body>{children}</body>
     </html>
   );
