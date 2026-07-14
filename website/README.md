@@ -9,6 +9,8 @@ hosted exclusively on [GitHub Pages](https://mystrowin.github.io/CFS/).
 - `styles.css` contains the visual design and responsive layout.
 - `script.js` contains the checksum-copy interaction.
 - `og.png` is the social sharing image.
+- `sitemap.xml` lists the public pages for search engines.
+- `robots.txt` allows crawling and points to the sitemap.
 
 ## Preview locally
 
