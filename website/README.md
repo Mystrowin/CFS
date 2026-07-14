@@ -1,24 +1,19 @@
 # CFS website
 
-This is the source for the public CFS download website hosted exclusively on
-[GitHub Pages](https://mystrowin.github.io/CFS/).
+This is the traditional static source for the public CFS download website,
+hosted exclusively on [GitHub Pages](https://mystrowin.github.io/CFS/).
 
-## Requirements
+## Files
 
-- Node.js 22 or newer
+- `index.html` contains the page structure and content.
+- `styles.css` contains the visual design and responsive layout.
+- `script.js` contains the checksum-copy interaction.
+- `og.png` is the social sharing image.
 
-## Local development
+## Preview locally
 
-```bash
-npm install
-npm run dev
-```
+Open `index.html` in a web browser. No packages, framework, or build step are
+required.
 
-## Production build
-
-```bash
-npm run build
-```
-
-The static site is generated in `out/`. Pushes affecting `website/` are built
-and deployed by `.github/workflows/deploy-pages.yml`.
+Pushes affecting `website/` are deployed directly by
+`.github/workflows/deploy-pages.yml`.
