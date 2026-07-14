@@ -4,39 +4,18 @@ import test from "node:test";
 
 const templateRoot = new URL("../", import.meta.url);
 
-async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
-    }),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
-      },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
-}
-
-test("server-renders the CFS release landing page", async () => {
-  const response = await render();
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-
-  const html = await response.text();
+test("exports the CFS release landing page for GitHub Pages", async () => {
+  const html = await readFile(new URL("../out/index.html", import.meta.url), "utf8");
   assert.match(html, /<title>CFS 0\.1\.0 Beta/);
   assert.match(html, /Compressed archives/);
   assert.match(html, /Download Windows Setup/);
   assert.match(html, /Experimental beta/);
   assert.match(html, /d3b64fc8167b39d40b92b74de0272f2d73ac62fdcb962e5cdede5fe04a0cd91e/);
   assert.match(html, /CFS-0\.1\.0-Beta-Setup\.exe/);
+  assert.match(
+    html,
+    /<!-- Cloudflare Web Analytics --><script type='module' src='https:\/\/static\.cloudflareinsights\.com\/beacon\.min\.js'/,
+  );
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/);
 });
 
@@ -52,8 +31,8 @@ test("keeps release data centralized and removes starter assets", async () => {
   assert.match(release, /export const release: CfsRelease/);
   assert.match(release, /github\.com\/Mystrowin\/CFS\/releases\/download/);
   assert.match(page, /import \{ release \} from "\.\/release"/);
-  assert.match(layout, /x-forwarded-host/);
-  assert.match(layout, /\/og\.png/);
+  assert.match(layout, /https:\/\/mystrowin\.github\.io\/CFS\//);
+  assert.match(layout, /og\.png/);
   assert.match(css, /prefers-reduced-motion:\s*reduce/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.doesNotMatch(page + layout, /codex-preview|_sites-preview|Starter Project/);
