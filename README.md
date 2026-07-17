@@ -2,6 +2,10 @@
 
 CFS is experimental Windows beta software for testing compressed `.cfs` archives through a ProjFS-backed Explorer workflow.
 
+[Project website](https://mystrowin.github.io/CFS/) · [What is CFS?](https://mystrowin.github.io/CFS/what-is-cfs.html) · [Download the current beta](https://mystrowin.github.io/CFS/#download)
+
+If the project is useful or technically interesting, star the repository so more Windows testers can find it.
+
 > Do not use CFS as the only copy of important or irreplaceable files. Keep separate backups. Use this beta only with non-critical test data.
 
 CFS 0.2.0 Beta is not production-ready and does not claim compatibility with every Windows application.
