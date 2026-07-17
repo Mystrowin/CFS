@@ -1,0 +1,13 @@
+CFS 0.1.0 Beta third-party notices
+
+Microsoft .NET
+-------------
+The self-contained application redistributes Microsoft .NET runtime components.
+The official SDK LICENSE.txt and ThirdPartyNotices.txt used for this build are included under licenses.
+
+7-Zip LZMA SDK 26.02
+--------------------
+CFS includes cfs-lzma.dll built from the 7-Zip LZMA SDK and the reduced 7zr.exe tool for legacy CFS block compatibility.
+The LZMA SDK states that the LZMA SDK is placed in the public domain. Its supplied notice is included as licenses/LZMA-SDK-NOTICE.txt.
+
+No notice in this file changes the terms of the included upstream license and notice files.

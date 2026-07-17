@@ -1,0 +1,221 @@
+[CmdletBinding()]
+param(
+    [string]$RepositoryOwner = 'Mystrowin',
+    [string]$Destination = '',
+    [switch]$InstallInnoSetup,
+    [switch]$SkipFormat
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$expectedDestination = [IO.Path]::GetFullPath(
+    (Join-Path (Split-Path -Parent $repoRoot) 'Publishable work')).TrimEnd('\')
+if ([string]::IsNullOrWhiteSpace($Destination)) { $Destination = $expectedDestination }
+$destinationFull = [IO.Path]::GetFullPath($Destination).TrimEnd('\')
+if ($destinationFull -ne $expectedDestination) {
+    throw "Destination must be the Publishable work folder under the current user's Documents folder."
+}
+
+[xml]$props = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'Directory.Build.props')
+$version = [string]$props.Project.PropertyGroup.CfsVersion
+$label = [string]$props.Project.PropertyGroup.CfsReleaseLabel
+if ([string]::IsNullOrWhiteSpace($version) -or [string]::IsNullOrWhiteSpace($label)) {
+    throw 'Directory.Build.props must define a non-empty CfsVersion and CfsReleaseLabel.'
+}
+
+$releaseStem = "CFS-$version-$label"
+$portableName = "$releaseStem-win-x64.zip"
+$sourceName = "$releaseStem-Source"
+$sourceZipName = "$sourceName.zip"
+$setupName = "$releaseStem-Setup.exe"
+$releaseTag = "v$version-beta"
+
+$dotnet = if ($env:DOTNET_ROOT) { Join-Path $env:DOTNET_ROOT 'dotnet.exe' } else { Join-Path $env:ProgramFiles 'dotnet\dotnet.exe' }
+if (-not (Test-Path -LiteralPath $dotnet)) { $dotnet = Join-Path $env:ProgramFiles 'dotnet\dotnet.exe' }
+if (-not (Test-Path -LiteralPath $dotnet)) { $dotnet = Join-Path $env:USERPROFILE 'scoop\apps\dotnet-sdk\current\dotnet.exe' }
+if (-not (Test-Path -LiteralPath $dotnet)) { throw 'dotnet.exe was not found.' }
+
+function Find-InnoCompiler {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return $null
+}
+
+$iscc = Find-InnoCompiler
+if (-not $iscc -and $InstallInnoSetup) {
+    & winget install --id JRSoftware.InnoSetup -e --silent --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) { throw "winget could not install Inno Setup (exit $LASTEXITCODE)." }
+    $iscc = Find-InnoCompiler
+}
+if (-not $iscc) { throw 'Inno Setup 6 was not found. Re-run with -InstallInnoSetup.' }
+
+New-Item -ItemType Directory -Path $destinationFull -Force | Out-Null
+$sourceFolder = Join-Path $destinationFull $sourceName
+$sourceZip = Join-Path $destinationFull $sourceZipName
+$setupPath = Join-Path $destinationFull $setupName
+$installerBuildDir = Join-Path $repoRoot 'dist\installer'
+$compiledSetupPath = Join-Path $installerBuildDir $setupName
+$portableOutput = Join-Path $destinationFull $portableName
+$updatePath = Join-Path $destinationFull 'update.json'
+$checksumsPath = Join-Path $destinationFull 'SHA256SUMS.txt'
+
+if (Test-Path -LiteralPath $sourceFolder -PathType Container) {
+    # The copied LZMA source can carry read-only attributes. This exact
+    # build-owned output is the only tree whose attributes are cleared.
+    Get-ChildItem -LiteralPath $sourceFolder -Recurse -Force | ForEach-Object { $_.Attributes = [IO.FileAttributes]::Normal }
+    (Get-Item -LiteralPath $sourceFolder -Force).Attributes = [IO.FileAttributes]::Normal
+}
+foreach ($path in @($sourceFolder, $sourceZip, $setupPath, $portableOutput, $updatePath, $checksumsPath)) {
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+}
+if (Test-Path -LiteralPath $installerBuildDir) { Remove-Item -LiteralPath $installerBuildDir -Recurse -Force }
+New-Item -ItemType Directory -Path $installerBuildDir -Force | Out-Null
+
+# Build the canonical 0.2 developer staging payload first. This ensures the
+# installer and portable archive contain the exact same broker-backed payload.
+$publishedFolder = Join-Path $repoRoot "dist\$releaseStem-win-x64"
+& (Join-Path $repoRoot 'tools\Publish-CfsPrototype.ps1') -DeveloperStaging -OutputPath $publishedFolder
+if ($LASTEXITCODE -ne 0) { throw 'Portable publishing failed.' }
+$releaseIdentity = "CFS $version $label"
+$releaseNotes = "docs\RELEASE-NOTES-$version-$($label.ToUpperInvariant()).md"
+$performanceReport = "dist\CFS-$version-$label-performance.json"
+try {
+    foreach ($relative in @($releaseNotes, $performanceReport, 'README.md', 'packaging\BETA-NOTICE.txt')) {
+        $inputPath = Join-Path $repoRoot $relative
+        if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf)) {
+            throw "Current release input is missing: $relative. Refusing to build a package labelled $releaseIdentity."
+        }
+        if ((Get-Content -Raw -LiteralPath $inputPath).IndexOf($releaseIdentity, [StringComparison]::Ordinal) -lt 0) {
+            throw "Current release input is not marked '$releaseIdentity': $relative. Refusing to package stale release material."
+        }
+    }
+}
+catch {
+    if (Test-Path -LiteralPath $publishedFolder -PathType Container) {
+        Remove-Item -LiteralPath $publishedFolder -Recurse -Force
+    }
+    throw
+}
+& (Join-Path $repoRoot 'tools\Publish-CfsPrototype.ps1') -OutputPath $publishedFolder
+if ($LASTEXITCODE -ne 0) { throw 'Versioned portable package assembly failed.' }
+$publishedZip = "$publishedFolder.zip"
+if (-not (Test-Path -LiteralPath $publishedFolder) -or -not (Test-Path -LiteralPath $publishedZip)) {
+    throw 'Versioned portable package assembly did not create its expected outputs.'
+}
+Copy-Item -LiteralPath $publishedZip -Destination $portableOutput -Force
+
+# Copy only the source inputs needed to inspect, build, test, and package CFS.
+New-Item -ItemType Directory -Path $sourceFolder -Force | Out-Null
+foreach ($file in @('.gitignore', 'Directory.Build.props', 'LICENSE.txt', 'README.md')) {
+    Copy-Item -LiteralPath (Join-Path $repoRoot $file) -Destination (Join-Path $sourceFolder $file) -Force
+}
+foreach ($directory in @('packaging', 'src', 'tests', 'third_party')) {
+    Copy-Item -LiteralPath (Join-Path $repoRoot $directory) -Destination (Join-Path $sourceFolder $directory) -Recurse -Force
+}
+$docsDestination = Join-Path $sourceFolder 'docs'
+New-Item -ItemType Directory -Path $docsDestination -Force | Out-Null
+Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs') -Force |
+    Where-Object { $_.Name -ne 'RECOVERY-VERIFICATION-BLOCKER.md' } |
+    Copy-Item -Destination $docsDestination -Recurse -Force
+$toolsDestination = Join-Path $sourceFolder 'tools'
+New-Item -ItemType Directory -Path $toolsDestination -Force | Out-Null
+Get-ChildItem -LiteralPath (Join-Path $repoRoot 'tools') -Force |
+    Where-Object { $_.Name -notmatch '\.bak-\d{8}-\d{4}$' } |
+    Copy-Item -Destination $toolsDestination -Recurse -Force
+$websiteSource = Join-Path $repoRoot 'website'
+if (Test-Path -LiteralPath $websiteSource) {
+    $websiteDestination = Join-Path $sourceFolder 'website'
+    & robocopy $websiteSource $websiteDestination /E /XD node_modules dist .vinext .wrangler .git coverage outputs work /XF '*.log' '*.tmp' '.env*' /NFL /NDL /NJH /NJS /NP
+    if ($LASTEXITCODE -gt 7) { throw "Website source copy failed with robocopy exit code $LASTEXITCODE." }
+}
+
+# Formatting happens only in the publishable copy so the working tree remains untouched.
+if (-not $SkipFormat) {
+    $projects = Get-ChildItem -LiteralPath $sourceFolder -Recurse -Filter '*.csproj' -File |
+        Where-Object { $_.FullName -notlike '*\third_party\*' }
+    foreach ($project in $projects) {
+        & $dotnet format $project.FullName --no-restore --verbosity quiet
+        if ($LASTEXITCODE -ne 0) {
+            & $dotnet format $project.FullName --verbosity quiet
+            if ($LASTEXITCODE -ne 0) { throw "dotnet format failed for $($project.FullName)." }
+        }
+    }
+}
+
+# Formatting/restoration may create build directories; never publish them.
+Get-ChildItem -LiteralPath $sourceFolder -Recurse -Force -Directory |
+    Where-Object {
+        $_.Name -in @('.git', 'dist', '.vs', 'node_modules', '.vinext', '.wrangler', 'coverage', 'outputs', 'work') -or
+        ($_.Name -in @('bin', 'obj') -and $_.FullName -notlike "$sourceFolder\third_party\*")
+    } |
+    Sort-Object FullName -Descending |
+    Remove-Item -Recurse -Force
+Get-ChildItem -LiteralPath $sourceFolder -Recurse -Force -File |
+    Where-Object {
+        $_.Extension -in @('.log', '.tmp', '.user', '.suo', '.pdb') -or
+        $_.Name -match '(?i)smoke|ai.packet|attachment'
+    } | Remove-Item -Force
+
+$ownership = 'Copyright © 2026 Neeraj Pragnya Krishna Vasagiri. All rights reserved.'
+if ((Get-Content -Raw -LiteralPath (Join-Path $sourceFolder 'LICENSE.txt')) -notmatch [regex]::Escape($ownership)) {
+    throw 'The publishable source license does not contain the required ownership notice.'
+}
+
+# Catch private machine paths and common credential forms before publication.
+$scanFiles = Get-ChildItem -LiteralPath $sourceFolder -Recurse -File |
+    Where-Object { $_.Extension -notin @('.dll', '.exe', '.zip', '.png', '.ico') }
+$scanPatterns = @(
+    'C:\\Users\\Krishna',
+    '(?i)(api[_-]?key|client[_-]?secret|access[_-]?token)\s*[:=]\s*["''][^"'']{8,}["'']',
+    '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
+)
+foreach ($pattern in $scanPatterns) {
+    $matches = $scanFiles | Select-String -Pattern $pattern
+    if ($matches) { throw "Publishable-source scan rejected content matching: $pattern" }
+}
+
+Compress-Archive -LiteralPath $sourceFolder -DestinationPath $sourceZip -CompressionLevel Optimal
+
+& $iscc "/DSourceDir=$publishedFolder" "/DOutputDir=$installerBuildDir" (Join-Path $repoRoot 'packaging\CFS-Setup.iss')
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $compiledSetupPath)) { throw 'Inno Setup compilation failed.' }
+Copy-Item -LiteralPath $compiledSetupPath -Destination $setupPath -Force
+
+$setupHash = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$assetBase = "https://github.com/$RepositoryOwner/CFS/releases/download/$releaseTag"
+$manifest = [ordered]@{
+    schemaVersion = 1
+    version = $version
+    releaseLabel = $label
+    channel = 'beta'
+    architecture = 'x64'
+    publishedUtc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+    minimumWindowsBuild = 17763
+    setupUrl = "$assetBase/$setupName"
+    sha256 = $setupHash
+    releaseNotesUrl = "https://github.com/$RepositoryOwner/CFS/releases/tag/$releaseTag"
+    mandatory = $false
+}
+$utf8NoBom = New-Object Text.UTF8Encoding($false)
+[IO.File]::WriteAllText($updatePath, ($manifest | ConvertTo-Json -Depth 4) + "`n", $utf8NoBom)
+
+$checksumFiles = @($setupPath, $portableOutput, $sourceZip, $updatePath)
+$checksumLines = foreach ($file in $checksumFiles) {
+    $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$hash  $(Split-Path -Leaf $file)"
+}
+[IO.File]::WriteAllLines($checksumsPath, $checksumLines, $utf8NoBom)
+
+Write-Host "SETUP=$setupPath"
+Write-Host "PORTABLE=$portableOutput"
+Write-Host "SOURCE_FOLDER=$sourceFolder"
+Write-Host "SOURCE_ZIP=$sourceZip"
+Write-Host "UPDATE_MANIFEST=$updatePath"
+Write-Host "CHECKSUMS=$checksumsPath"

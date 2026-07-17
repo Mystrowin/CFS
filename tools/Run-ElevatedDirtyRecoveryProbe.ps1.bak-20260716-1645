@@ -1,0 +1,202 @@
+[CmdletBinding()]
+param(
+    [string]$Workspace,
+    [string]$ResultPath
+)
+
+$ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace = Split-Path -Parent $MyInvocation.MyCommand.Path | Split-Path -Parent }
+if ([string]::IsNullOrWhiteSpace($ResultPath)) { $ResultPath = Join-Path $Workspace 'elevated-dirty-recovery-result.json' }
+$dotNetRoot = 'C:\Program Files\dotnet'
+$dotNetExe = Join-Path $dotNetRoot 'dotnet.exe'
+if (-not (Test-Path -LiteralPath $dotNetExe)) { throw "Required .NET host not found: $dotNetExe" }
+$env:DOTNET_ROOT = $dotNetRoot
+$env:DOTNET_ROLL_FORWARD = 'Major'
+if (-not (($env:PATH -split ';') -contains $dotNetRoot)) { $env:PATH = "$dotNetRoot;$env:PATH" }
+
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Run this probe from an elevated Windows PowerShell window.'
+}
+
+$broker = Join-Path $Workspace 'src\Cfs.Broker\bin\Release\net8.0-windows\Cfs.Broker.exe'
+if (-not (Test-Path -LiteralPath $broker)) { throw "Broker binary not found: $broker" }
+
+$runRoot = Join-Path $env:TEMP ('cfs-dirty-recovery-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
+$archive = Join-Path $runRoot 'DirtyRecoveryProbe.cfs'
+$suffix = 'dirty-recovery-' + ([guid]::NewGuid().ToString('N'))
+$env:CFS_BROKER_INSTANCE_SUFFIX = $suffix
+$env:CFS_BROKER_ALLOW_SHUTDOWN = '1'
+$env:CFS_BROKER_DISABLE_EXPLORER = '1'
+# Keep the automatic transaction open while the probe observes dirty state.
+$env:CFS_BROKER_TEST_QUIET_PERIOD_MS = '60000'
+
+$result = [ordered]@{
+    schema = 1
+    startedUtc = [DateTime]::UtcNow.ToString('o')
+    elevated = $true
+    projfs = $null
+    archive = $archive
+    brokerPath = $broker
+    baselineArchiveSha256 = $null
+    firstOpen = $null
+    dirtyStatus = $null
+    dirtyGeneration = $null
+    committedGeneration = $null
+    transactionMarker = $null
+    transactionState = $null
+    transactionGeneration = $null
+    killedBrokerPid = $null
+    reopen = $null
+    recoveryDetected = $false
+    recoveryErrorCode = $null
+    recoveryDataPreservedBeforeCleanup = $false
+    archiveSha256AfterReopen = $null
+    lastValidArchivePreserved = $false
+    pendingFilePresentAfterReopen = $false
+    cleanup = $false
+    error = $null
+}
+$probeMount = $null
+$sessionRoot = Join-Path $env:LOCALAPPDATA 'CFS\Sessions'
+$probePids = [System.Collections.Generic.List[int]]::new()
+
+function Invoke-BrokerRaw([string[]]$CommandArguments, [string]$Name) {
+    $responsePath = Join-Path $runRoot ($Name + '.json')
+    $arguments = @($CommandArguments + @('--response-file', $responsePath))
+    $argumentString = (($arguments | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' ')
+    $ownerCommand = $CommandArguments.Count -gt 0 -and $CommandArguments[0] -in @('create-empty','open')
+    if ($ownerCommand) {
+        $process = Start-Process -FilePath $broker -ArgumentList $argumentString -PassThru
+        $deadline = [DateTime]::UtcNow.AddSeconds(20)
+        while (-not (Test-Path -LiteralPath $responsePath)) {
+            if ($process.HasExited) { throw "$Name broker exited with code $($process.ExitCode) before writing a response." }
+            if ([DateTime]::UtcNow -gt $deadline) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue; throw "$Name produced no response within 20 seconds." }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    else {
+        $process = Start-Process -FilePath $broker -ArgumentList $argumentString -Wait -PassThru
+    }
+    if (-not $probePids.Contains([int]$process.Id)) { $probePids.Add([int]$process.Id) }
+    if (-not (Test-Path -LiteralPath $responsePath)) { throw "$Name produced no response (exit $($process.ExitCode))." }
+    return (Get-Content -Raw -LiteralPath $responsePath | ConvertFrom-Json)
+}
+
+function Invoke-Broker([string[]]$CommandArguments, [string]$Name) {
+    $response = Invoke-BrokerRaw $CommandArguments $Name
+    if (-not $response.Success) { throw "$Name failed: $($response.ErrorCode) $($response.Message)" }
+    return $response
+}
+
+function Get-Sha256([string]$Path) { return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash }
+
+try {
+    $feature = Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS
+    $result.projfs = $feature.State
+    if ($feature.State -ne 'Enabled') { throw "Client-ProjFS is not enabled: $($feature.State)" }
+
+    $null = Invoke-Broker @('create-empty', $archive) 'create'
+    $result.baselineArchiveSha256 = Get-Sha256 $archive
+    $result.firstOpen = Invoke-Broker @('open', $archive) 'open'
+    $probeMount = [string]$result.firstOpen.MountPath
+    if (-not (Test-Path -LiteralPath $probeMount)) { throw "Mount path was not created: $probeMount" }
+
+    $pendingFile = Join-Path $probeMount 'dirty-recovery-pending.txt'
+    [IO.File]::WriteAllText($pendingFile, 'write intentionally interrupted before commit')
+    $status = $null
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        Start-Sleep -Milliseconds 100
+        $status = Invoke-BrokerRaw @('status', $archive) 'status'
+        if ($status.IsDirty -and ([int64]$status.DirtyGeneration -gt [int64]$status.CommittedGeneration)) { break }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $result.dirtyStatus = $status
+    $result.dirtyGeneration = [int64]$status.DirtyGeneration
+    $result.committedGeneration = [int64]$status.CommittedGeneration
+    if (-not ($status.IsDirty -and ($result.dirtyGeneration -gt $result.committedGeneration))) {
+        throw "Session did not reach dirty state: isDirty=$($status.IsDirty), dirtyGeneration=$($status.DirtyGeneration), committedGeneration=$($status.CommittedGeneration)."
+    }
+
+    $marker = "$probeMount.cfs-session.json"
+    $result.transactionMarker = $marker
+    if (Test-Path -LiteralPath $marker) {
+        $markerJson = Get-Content -Raw -LiteralPath $marker | ConvertFrom-Json
+        $result.transactionState = $markerJson.state
+        $result.transactionGeneration = $markerJson.lastCommittedGeneration
+    }
+
+    $brokerPid = [int]$result.firstOpen.BrokerProcessId
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$brokerPid"
+    if (-not $proc -or [IO.Path]::GetFullPath($proc.ExecutablePath) -ne [IO.Path]::GetFullPath($broker)) {
+        throw "Refusing to kill PID $brokerPid because it is not the expected CFS broker."
+    }
+    $result.killedBrokerPid = $brokerPid
+    Stop-Process -Id $brokerPid -Force
+    Start-Sleep -Milliseconds 500
+
+    $reopen = Invoke-BrokerRaw @('open', $archive) 'reopen'
+    $result.reopen = $reopen
+    $result.recoveryErrorCode = $reopen.ErrorCode
+    $result.recoveryDetected = (-not $reopen.Success -and $reopen.ErrorCode -eq 'recovery-needed')
+    $result.recoveryDataPreservedBeforeCleanup = (Test-Path -LiteralPath $pendingFile) -or (Test-Path -LiteralPath "$probeMount.cfs-session.json")
+    $result.archiveSha256AfterReopen = Get-Sha256 $archive
+    $result.lastValidArchivePreserved = ($result.baselineArchiveSha256 -eq $result.archiveSha256AfterReopen)
+    if ($reopen.Success -and $reopen.MountPath) {
+        $result.pendingFilePresentAfterReopen = Test-Path -LiteralPath (Join-Path ([string]$reopen.MountPath) 'dirty-recovery-pending.txt')
+    }
+    if (-not $result.lastValidArchivePreserved) { throw 'The last valid archive hash changed after interrupted recovery.' }
+    if (-not ($result.recoveryDetected -or $reopen.Success)) { throw "Unexpected reopen result: $($reopen.ErrorCode)." }
+
+    if ($reopen.Success) {
+        $null = Invoke-Broker @('close', $archive) 'close'
+        $null = Invoke-Broker @('shutdown') 'shutdown'
+    }
+    $result.cleanup = $true
+}
+catch {
+    $result.error = $_.Exception.Message
+    throw
+}
+finally {
+    # Stop only PIDs that this run started and whose executable and unique
+    # suffix still identify them as this probe's broker processes.
+    foreach ($pid in $probePids) {
+        $candidate = Get-CimInstance Win32_Process -Filter "ProcessId=$pid" -ErrorAction SilentlyContinue
+        if ($candidate -and $candidate.ExecutablePath -and
+            [IO.Path]::GetFullPath($candidate.ExecutablePath) -eq [IO.Path]::GetFullPath($broker) -and
+            $candidate.CommandLine -like "*$suffix*") {
+            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Recovery-needed intentionally preserves evidence until this point. Remove
+    # only the deterministic session path returned by this probe after its CFS
+    # marker proves ownership; never recurse through an unknown session folder.
+    $ownedMount = $false
+    if ($probeMount -and (Test-Path -LiteralPath $probeMount)) {
+        try {
+            $fullMount = [IO.Path]::GetFullPath($probeMount)
+            $fullSessionRoot = [IO.Path]::GetFullPath($sessionRoot)
+            $ownerMarker = Join-Path $fullMount '.cfs-mount-session'
+            $markerValue = if (Test-Path -LiteralPath $ownerMarker) { Get-Content -Raw -LiteralPath $ownerMarker } else { '' }
+            $ownedMount = ([IO.Path]::GetDirectoryName($fullMount) -eq $fullSessionRoot -and $markerValue -match '^[0-9a-fA-F]{32}$')
+            if ($ownedMount) {
+                Remove-Item -LiteralPath $fullMount -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath "$fullMount.cfs-session.json" -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath "$fullMount.cfs-candidate" -Force -ErrorAction SilentlyContinue
+            }
+        }
+        catch { $ownedMount = $false }
+    }
+    $result.cleanup = -not ($probeMount -and ((Test-Path -LiteralPath $probeMount) -or (Test-Path -LiteralPath "$probeMount.cfs-session.json") -or (Test-Path -LiteralPath "$probeMount.cfs-candidate")))
+    $result.finishedUtc = [DateTime]::UtcNow.ToString('o')
+    $resultDirectory = Split-Path -Parent $ResultPath
+    if ($resultDirectory) { New-Item -ItemType Directory -Path $resultDirectory -Force | Out-Null }
+    $result | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $ResultPath -Encoding UTF8
+    Remove-Item -LiteralPath $runRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Output (Get-Content -Raw -LiteralPath $ResultPath)
