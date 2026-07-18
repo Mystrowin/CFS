@@ -626,7 +626,7 @@ h3 {
 
 .release-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1rem;
 }
 
@@ -635,6 +635,12 @@ h3 {
   border: 1px solid #315b8c;
   background: rgba(12, 17, 25, 0.82);
   box-shadow: inset 0 1px rgba(121, 183, 255, 0.12);
+}
+
+.release-card.current-release {
+  border-color: #4f9cff;
+  background: linear-gradient(160deg, rgba(24, 75, 132, 0.36), rgba(12, 17, 25, 0.92));
+  box-shadow: inset 0 1px rgba(160, 210, 255, 0.24), 0 0 0 1px rgba(79, 156, 255, 0.12);
 }
 
 .release-card h3 { margin-bottom: 0.4rem; font-size: 1.55rem; }
@@ -1003,6 +1009,12 @@ footer {
 
 .copyright {
   grid-column: 1 / -1;
+}
+
+@media (max-width: 1180px) and (min-width: 941px) {
+  .release-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 940px) {
