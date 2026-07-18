@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 var harnessLogRoot = Path.Combine(Path.GetTempPath(), "cfs-tests", "harness-" + Environment.ProcessId);
 Directory.CreateDirectory(harnessLogRoot);
@@ -15,12 +16,14 @@ var tests = new (string Name, Action Body)[]
     ("ProjFS mount enumerates manifest and hydrates requested CFS file", ProjFsMountHydratesRequestedFile),
     ("ProjFS nonzero-offset partial read returns exact bytes and isolates unrelated entries", ProjFsNonzeroOffsetPartialReadIsExactAndIsolated),
     ("ProjFS concurrent partial reads return exact bytes and isolate unrelated entries", ProjFsConcurrentPartialReadsAreExactAndIsolated),
+    ("ProjFS hydration cache evicts old payloads within fixed bounds", ProjFsHydrationCacheIsBounded),
     ("beta identity is centralized and consistent", BetaIdentityIsCentralizedAndConsistent),
     ("update manifests validate versions URLs and checksums", UpdateManifestsValidateVersionsUrlsAndChecksums),
     ("beta warning acknowledgement is version keyed", BetaWarningAcknowledgementIsVersionKeyed),
     ("diagnostic logging records lifecycle errors and protects private paths", DiagnosticLoggingRecordsLifecycleErrorsAndProtectsPrivatePaths),
     ("diagnostic locations and bug report actions are deterministic", DiagnosticLocationsAndBugReportActionsAreDeterministic),
     ("ProjFS prerequisites and mount policy never silently fall back", ProjFsPrerequisitesAndMountPolicyNeverSilentlyFallBack),
+    ("writable storage policy accepts only local NTFS and rejects cloud paths", WritableStoragePolicyIsStrict),
     ("explicit compatibility mode persists edits", ExplicitCompatibilityModePersistsEdits),
     ("UI lifecycle states include exact cleanup failure path", UiLifecycleStatesIncludeExactCleanupFailurePath),
     ("ProjFS mount session persists Explorer-style edits without rewriting unchanged blocks", ProjFsMountSessionPersistsExplorerStyleEdits),
@@ -36,6 +39,12 @@ var tests = new (string Name, Action Body)[]
     ("progress reports real archive and cleanup work", ProgressReportsRealWork),
     ("cancelling archive creation preserves existing archive", CancellationPreservesExistingArchive),
     ("validation detects corrupted file block", ValidationDetectsCorruptedFileBlock),
+    ("validation reports extreme compression ratios", ValidationReportsExtremeCompressionRatio),
+    ("archive path validation rejects hostile Windows names", ArchivePathValidationRejectsHostileNames),
+    ("archive parser rejects oversized manifest metadata before allocation", ArchiveParserRejectsOversizedManifestMetadata),
+    ("archive parser rejects duplicate and conflicting manifest paths", ArchiveParserRejectsDuplicateManifestPaths),
+    ("manifest parser rejects hostile paths ranges methods and versions before projection", ManifestParserRejectsHostileStructureBeforeProjection),
+    ("manifest parser enforces 16 TiB projected limit without hydration", ManifestParserEnforcesProjectedLimitWithoutHydration),
     ("deleting non-empty folder fails safely", DeletingNonEmptyFolderFailsSafely)
 };
 
@@ -94,6 +103,188 @@ static void CreateListExtractRoundtrip()
     Assert(File.ReadAllText(Path.Combine(extracted, "hello world.txt"), Encoding.UTF8) == "hello CFS", "text file mismatch");
     Assert(File.ReadAllBytes(Path.Combine(extracted, "empty.bin")).Length == 0, "empty file mismatch");
     Assert(Sha256(Path.Combine(source, "nested folder", "binary.bin")) == Sha256(Path.Combine(extracted, "nested folder", "binary.bin")), "binary file mismatch");
+}
+
+static void ArchivePathValidationRejectsHostileNames()
+{
+    foreach (var path in new[] { "../escape.txt", "safe:stream", "CON", "folder/AUX.txt", "trailing.", "trailing ", new string('a', 256) })
+    {
+        try { _ = CfsArchive.NormalizeEntryPath(path); }
+        catch (CfsArchiveException) { continue; }
+        throw new InvalidOperationException($"Hostile path was accepted: {path}");
+    }
+    Assert(CfsArchive.NormalizeEntryPath("folder/ordinary-file.txt") == "folder/ordinary-file.txt", "ordinary archive path was rejected");
+}
+
+static void ArchiveParserRejectsOversizedManifestMetadata()
+{
+    using var workspace = new TestWorkspace();
+    var path = Path.Combine(workspace.Root, "oversized-manifest.cfs");
+    var length = CfsArchive.MaximumManifestBytes + 1L;
+    using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+    {
+        stream.Write("CFS1"u8);
+        stream.Write(BitConverter.GetBytes(CfsArchive.FormatVersion));
+        stream.Write(BitConverter.GetBytes(24L));
+        stream.Write(BitConverter.GetBytes(length));
+        stream.SetLength(24L + length);
+    }
+    try { _ = CfsArchive.Load(path); }
+    catch (CfsArchiveException ex)
+    {
+        Assert(ex.Message.Contains("manifest location", StringComparison.OrdinalIgnoreCase), "oversized manifest did not fail at the metadata boundary");
+        return;
+    }
+    throw new InvalidOperationException("oversized manifest metadata was accepted");
+}
+
+static void ArchiveParserRejectsDuplicateManifestPaths()
+{
+    using var workspace = new TestWorkspace();
+    var duplicate = Path.Combine(workspace.Root, "duplicate.cfs");
+    WriteManifestOnlyArchive(duplicate, [
+        new CfsEntry { Path = "same", Type = ArchiveEntryType.Directory, CompressionMethod = CfsArchive.CompressionNone },
+        new CfsEntry { Path = "same", Type = ArchiveEntryType.Directory, CompressionMethod = CfsArchive.CompressionNone }
+    ]);
+    var conflict = Path.Combine(workspace.Root, "conflict.cfs");
+    WriteManifestOnlyArchive(conflict, [
+        new CfsEntry { Path = "same", Type = ArchiveEntryType.Directory, CompressionMethod = CfsArchive.CompressionNone },
+        new CfsEntry { Path = "same", Type = ArchiveEntryType.File, OriginalSize = 0, CompressedSize = 0, Offset = 24, CompressionMethod = CfsArchive.CompressionNone, Sha256 = Convert.ToHexString(SHA256.HashData([])).ToLowerInvariant() }
+    ]);
+    foreach (var path in new[] { duplicate, conflict })
+    {
+        try { _ = CfsArchive.Load(path); }
+        catch (CfsArchiveException ex) when (ex.Message.Contains("duplicate or conflicting", StringComparison.OrdinalIgnoreCase)) { continue; }
+        throw new InvalidOperationException("duplicate or conflicting manifest path was accepted: " + path);
+    }
+}
+
+static void ManifestParserRejectsHostileStructureBeforeProjection()
+{
+    using var workspace = new TestWorkspace();
+    foreach (var hostilePath in new[] { "../escape", "/absolute", "a//b", "safe:stream", "trailing.", "bad\u0001name" })
+    {
+        var path = Path.Combine(workspace.Root, Guid.NewGuid().ToString("N") + ".cfs");
+        WriteManifestOnlyArchive(path, [
+            new CfsEntry { Path = hostilePath, Type = ArchiveEntryType.Directory, CompressionMethod = CfsArchive.CompressionNone }
+        ]);
+        AssertThrows<CfsArchiveException>(() => CfsArchive.LoadManifestEntries(path),
+            $"hostile manifest path reached projected metadata: {hostilePath}");
+    }
+    AssertThrows<CfsArchiveException>(() => CfsArchive.NormalizeEntryPath("bad\uD800name"),
+        "unpaired Unicode surrogate was accepted");
+
+    var caseCollision = Path.Combine(workspace.Root, "case-collision.cfs");
+    WriteManifestOnlyArchive(caseCollision, [
+        new CfsEntry { Path = "Folder", Type = ArchiveEntryType.Directory, CompressionMethod = CfsArchive.CompressionNone },
+        new CfsEntry { Path = "folder", Type = ArchiveEntryType.Directory, CompressionMethod = CfsArchive.CompressionNone }
+    ]);
+    AssertThrows<CfsArchiveException>(() => CfsArchive.LoadManifestEntries(caseCollision),
+        "case-colliding manifest paths reached projected metadata");
+
+    var emptyHash = Convert.ToHexString(SHA256.HashData([])).ToLowerInvariant();
+    var ancestorConflict = Path.Combine(workspace.Root, "ancestor-conflict.cfs");
+    WriteManifestOnlyArchive(ancestorConflict, [
+        new CfsEntry { Path = "node", Type = ArchiveEntryType.File, Offset = 24, CompressionMethod = CfsArchive.CompressionNone, Sha256 = emptyHash },
+        new CfsEntry { Path = "node/child", Type = ArchiveEntryType.File, Offset = 24, CompressionMethod = CfsArchive.CompressionNone, Sha256 = emptyHash }
+    ]);
+    AssertThrows<CfsArchiveException>(() => CfsArchive.LoadManifestEntries(ancestorConflict),
+        "file/directory ancestor conflict reached projected metadata");
+
+    var fakeHash = new string('0', 64);
+    var overlap = Path.Combine(workspace.Root, "overlap.cfs");
+    WriteArchiveWithData(overlap, new byte[8], [
+        new CfsEntry { Path = "one", Type = ArchiveEntryType.File, OriginalSize = 1, CompressedSize = 4, Offset = 24, CompressionMethod = CfsArchive.CompressionLzma2RawV2, Sha256 = fakeHash },
+        new CfsEntry { Path = "two", Type = ArchiveEntryType.File, OriginalSize = 1, CompressedSize = 4, Offset = 26, CompressionMethod = CfsArchive.CompressionLzma2RawV2, Sha256 = fakeHash }
+    ]);
+    AssertThrows<CfsArchiveException>(() => CfsArchive.LoadManifestEntries(overlap),
+        "overlapping archive blocks reached projected metadata");
+
+    var outOfRange = Path.Combine(workspace.Root, "out-of-range.cfs");
+    WriteArchiveWithData(outOfRange, new byte[4], [
+        new CfsEntry { Path = "outside", Type = ArchiveEntryType.File, OriginalSize = 1, CompressedSize = 8, Offset = 24, CompressionMethod = CfsArchive.CompressionLzma2RawV2, Sha256 = fakeHash }
+    ]);
+    AssertThrows<CfsArchiveException>(() => CfsArchive.LoadManifestEntries(outOfRange),
+        "out-of-range archive block reached projected metadata");
+
+    var unsupported = Path.Combine(workspace.Root, "unsupported-method.cfs");
+    WriteArchiveWithData(unsupported, new byte[4], [
+        new CfsEntry { Path = "unsupported", Type = ArchiveEntryType.File, OriginalSize = 1, CompressedSize = 4, Offset = 24, CompressionMethod = "future-codec", Sha256 = fakeHash }
+    ]);
+    AssertThrows<CfsArchiveException>(() => CfsArchive.LoadManifestEntries(unsupported),
+        "unsupported compression method reached projected metadata");
+
+    var future = Path.Combine(workspace.Root, "future.cfs");
+    using (var stream = File.Create(future))
+    {
+        stream.Write("CFS1"u8);
+        stream.Write(BitConverter.GetBytes(CfsArchive.FormatVersion + 1));
+        stream.Write(new byte[16]);
+    }
+    AssertThrows<CfsArchiveException>(() => CfsArchive.LoadManifestEntries(future),
+        "unsupported future archive version reached projected metadata");
+}
+
+static void ManifestParserEnforcesProjectedLimitWithoutHydration()
+{
+    using var workspace = new TestWorkspace();
+    const int acceptedCount = 8192;
+    var fakeHash = new string('0', 64);
+    var acceptedEntries = Enumerable.Range(0, acceptedCount)
+        .Select(index => new CfsEntry
+        {
+            Path = $"entry-{index:D5}",
+            Type = ArchiveEntryType.File,
+            OriginalSize = CfsArchive.MaximumEntryUncompressedBytes,
+            CompressedSize = 1,
+            Offset = 24L + index,
+            CompressionMethod = CfsArchive.CompressionLzma2RawV2,
+            Sha256 = fakeHash
+        }).ToList();
+    var accepted = Path.Combine(workspace.Root, "projected-16tib.cfs");
+    WriteArchiveWithData(accepted, new byte[acceptedCount], acceptedEntries);
+    var metadata = CfsArchive.LoadManifestEntries(accepted);
+    Assert(metadata.Count == acceptedCount
+        && metadata.Sum(entry => (decimal)entry.OriginalSize) < CfsArchive.MaximumTotalUncompressedBytes,
+        "metadata-only parser did not accept the within-limit projected archive");
+
+    acceptedEntries.Add(new CfsEntry
+    {
+        Path = "entry-over-limit",
+        Type = ArchiveEntryType.File,
+        OriginalSize = CfsArchive.MaximumEntryUncompressedBytes,
+        CompressedSize = 1,
+        Offset = 24L + acceptedCount,
+        CompressionMethod = CfsArchive.CompressionLzma2RawV2,
+        Sha256 = fakeHash
+    });
+    var rejected = Path.Combine(workspace.Root, "projected-over-limit.cfs");
+    WriteArchiveWithData(rejected, new byte[acceptedCount + 1], acceptedEntries);
+    AssertThrows<CfsArchiveException>(() => CfsArchive.LoadManifestEntries(rejected),
+        "projected archive above 16 TiB was accepted");
+}
+
+static void WriteManifestOnlyArchive(string path, IReadOnlyList<CfsEntry> entries)
+{
+    var manifest = JsonSerializer.SerializeToUtf8Bytes(new CfsManifest { Entries = entries.ToList() });
+    using var stream = File.Create(path);
+    stream.Write("CFS1"u8);
+    stream.Write(BitConverter.GetBytes(CfsArchive.FormatVersion));
+    stream.Write(BitConverter.GetBytes(24L));
+    stream.Write(BitConverter.GetBytes((long)manifest.Length));
+    stream.Write(manifest);
+}
+
+static void WriteArchiveWithData(string path, byte[] data, IReadOnlyList<CfsEntry> entries)
+{
+    var manifest = JsonSerializer.SerializeToUtf8Bytes(new CfsManifest { Entries = entries.ToList() });
+    using var stream = File.Create(path);
+    stream.Write("CFS1"u8);
+    stream.Write(BitConverter.GetBytes(CfsArchive.FormatVersion));
+    stream.Write(BitConverter.GetBytes(24L + data.Length));
+    stream.Write(BitConverter.GetBytes((long)manifest.Length));
+    stream.Write(data);
+    stream.Write(manifest);
 }
 
 static void ManifestEntryReaderHydratesOneFile()
@@ -197,6 +388,9 @@ static void ProjFsConcurrentPartialReadsAreExactAndIsolated()
     Assert(mount.ReadRequests.Any(request => request.Path == "second.bin" && Covers(request, secondOffset, secondLength)), $"concurrent second-file callback range did not cover the application read: {FormatRequests(mount.ReadRequests)}");
     Assert(mount.HydratedPaths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).SequenceEqual(new[] { "first.bin", "second.bin" }, StringComparer.OrdinalIgnoreCase), "concurrent reads hydrated the wrong archive entries");
     Assert(!mount.ReadRequests.Any(request => request.Path == "untouched.bin"), "concurrent reads requested the untouched archive payload");
+    Assert(mount.HydrationJobLimit == Math.Min(8, Math.Max(2, Environment.ProcessorCount))
+        && mount.MaximumObservedConcurrentHydrations <= mount.HydrationJobLimit,
+        "ProjFS hydration exceeded its configured CPU-bounded concurrency limit");
 
     mount.Dispose();
     Directory.Delete(mountRoot, recursive: true);
@@ -283,11 +477,11 @@ static void ProjFsManualSaveThenUnmountSucceeds()
 
 static void BetaIdentityIsCentralizedAndConsistent()
 {
-    Assert(CfsProductInfo.ReleaseIdentity == "0.2.0 Beta", $"unexpected release identity: {CfsProductInfo.ReleaseIdentity}");
-    Assert(CfsProductInfo.DisplayName == "CFS 0.2.0 Beta", $"unexpected display name: {CfsProductInfo.DisplayName}");
+    Assert(CfsProductInfo.ReleaseIdentity == "0.3.0 Beta", $"unexpected release identity: {CfsProductInfo.ReleaseIdentity}");
+    Assert(CfsProductInfo.DisplayName == "CFS 0.3.0 Beta", $"unexpected display name: {CfsProductInfo.DisplayName}");
     Assert(CfsProductInfo.WindowTitle == CfsProductInfo.DisplayName, "window title diverged from central identity");
     Assert(CfsProductInfo.AcknowledgementKey == CfsProductInfo.ReleaseIdentity, "warning acknowledgement is not keyed to the release identity");
-    Assert(CfsProductInfo.BuildIdentifier.StartsWith("0.2.0-Beta-", StringComparison.Ordinal), $"build identifier lacks beta identity: {CfsProductInfo.BuildIdentifier}");
+    Assert(CfsProductInfo.BuildIdentifier.StartsWith("0.3.0-Beta-", StringComparison.Ordinal), $"build identifier lacks beta identity: {CfsProductInfo.BuildIdentifier}");
     Assert(CfsProductInfo.BetaInformation.Contains(CfsProductInfo.BetaSafetyWarning, StringComparison.Ordinal), "beta information omitted the backup warning");
     Assert(CfsProductInfo.BetaInformation.Contains(CfsProductInfo.BugReportDestination, StringComparison.Ordinal), "beta information omitted support/reporting instructions");
 }
@@ -789,7 +983,77 @@ static void ValidationDetectsCorruptedFileBlock()
     }
 
     var result = CfsArchive.Validate(archivePath);
+    var metadataOnly = CfsArchive.Load(archivePath);
+    Assert(metadataOnly.ListEntries().Count == 1,
+        "metadata-only archive load hydrated or rejected the corrupted payload before access");
+    AssertThrows<CfsArchiveException>(() => metadataOnly.ReadFile("data.bin"),
+        "lazy payload access did not detect corrupted compressed data");
     Assert(!result.IsValid, "corrupted archive should fail validation");
+}
+
+static void WritableStoragePolicyIsStrict()
+{
+    var localNtfs = CfsWritableStoragePolicy.Evaluate(
+        @"C:\Cfs\archive.cfs", true, _ => new CfsStorageDescriptor(DriveType.Fixed, "NTFS"));
+    Assert(localNtfs.IsSupported, "local NTFS was unexpectedly rejected");
+    var removable = CfsWritableStoragePolicy.Evaluate(
+        @"E:\archive.cfs", true, _ => new CfsStorageDescriptor(DriveType.Removable, "NTFS"));
+    Assert(!removable.IsSupported && removable.Message.Contains("local NTFS", StringComparison.OrdinalIgnoreCase),
+        "removable NTFS was not rejected");
+    var fat = CfsWritableStoragePolicy.Evaluate(
+        @"E:\archive.cfs", true, _ => new CfsStorageDescriptor(DriveType.Fixed, "exFAT"));
+    Assert(!fat.IsSupported, "exFAT was not rejected");
+    var cloud = CfsWritableStoragePolicy.Evaluate(
+        @"C:\Users\Example\OneDrive\archive.cfs", true, _ => new CfsStorageDescriptor(DriveType.Fixed, "NTFS"),
+        [@"C:\Users\Example\OneDrive"]);
+    Assert(!cloud.IsSupported && cloud.Message.Contains("cloud-synchronized", StringComparison.OrdinalIgnoreCase),
+        "cloud-synchronized path was not rejected");
+}
+
+static void ProjFsHydrationCacheIsBounded()
+{
+    if (!OperatingSystem.IsWindows()) return;
+
+    using var workspace = new TestWorkspace();
+    var source = Path.Combine(workspace.Root, "source");
+    Directory.CreateDirectory(source);
+    const int fileCount = 72;
+    for (var index = 0; index < fileCount; index++)
+        File.WriteAllBytes(Path.Combine(source, $"entry-{index:D3}.bin"), CreatePayload(4096, index + 1));
+    var archivePath = Path.Combine(workspace.Root, "bounded-cache.cfs");
+    CfsArchive.CreateFromFolder(source, archivePath);
+    var mountRoot = Path.Combine(workspace.Root, "mount");
+    using var mount = CfsProjFsMount.Create(archivePath, mountRoot);
+
+    for (var index = 0; index < fileCount; index++)
+    {
+        var bytes = File.ReadAllBytes(Path.Combine(mountRoot, $"entry-{index:D3}.bin"));
+        Assert(bytes.SequenceEqual(CreatePayload(4096, index + 1)), $"bounded hydration returned incorrect entry {index}");
+    }
+
+    Assert(mount.HydratedFileCount <= mount.HydrationCacheEntryLimit
+        && mount.HydrationCacheRetainedBytes <= mount.HydrationCacheLimitBytes,
+        $"hydration cache exceeded its bounds: entries={mount.HydratedFileCount}/{mount.HydrationCacheEntryLimit} bytes={mount.HydrationCacheRetainedBytes}/{mount.HydrationCacheLimitBytes}");
+    Assert(!mount.HydratedPaths.Contains("entry-000.bin", StringComparer.OrdinalIgnoreCase)
+        && mount.HydratedPaths.Contains($"entry-{fileCount - 1:D3}.bin", StringComparer.OrdinalIgnoreCase),
+        "hydration cache did not evict least-recently-used payloads");
+}
+
+static void ValidationReportsExtremeCompressionRatio()
+{
+    using var workspace = new TestWorkspace();
+    var source = Path.Combine(workspace.Root, "ratio-source");
+    Directory.CreateDirectory(source);
+    File.WriteAllBytes(Path.Combine(source, "zeros.bin"), new byte[4 * 1024 * 1024]);
+    var archivePath = Path.Combine(workspace.Root, "ratio.cfs");
+    CfsArchive.CreateFromFolder(source, archivePath);
+    var entry = CfsArchive.LoadManifestEntries(archivePath).Single(item => item.Type == ArchiveEntryType.File);
+    Assert(entry.OriginalSize / (double)entry.CompressedSize >= 1000d,
+        "compression-ratio fixture did not reach the warning threshold");
+    var validation = CfsArchive.Validate(archivePath);
+    Assert(validation.IsValid && validation.Warnings.Count == 1
+        && validation.Message.Contains("warnings", StringComparison.OrdinalIgnoreCase),
+        "valid extreme-ratio archive did not produce a non-fatal validation warning");
 }
 
 static void Assert(bool condition, string message)

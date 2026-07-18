@@ -1,4 +1,4 @@
-CFS 0.2.0 Beta
+CFS 0.3.0 Beta
 
 CFS is experimental beta software.
 

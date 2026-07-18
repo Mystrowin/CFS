@@ -64,6 +64,10 @@ public static class CfsSourcePathSafety
     {
         if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
             throw new CfsArchiveException("Compress to CFS does not follow symbolic links, junctions, or other reparse points. Remove the reparse entry and try again.");
+        if ((entry.Attributes & FileAttributes.SparseFile) != 0)
+            throw new CfsArchiveException("CFS does not preserve sparse-file semantics. Replace the sparse file with a regular file before adding it to an archive.");
+        if ((entry.Attributes & FileAttributes.Device) != 0)
+            throw new CfsArchiveException("CFS does not support device objects in archives.");
     }
 }
 

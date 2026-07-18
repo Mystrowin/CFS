@@ -53,18 +53,20 @@ internal static class Lzma2Compressor
         return File.ReadAllBytes(archivePath);
     }
 
-    public static byte[] Decompress(byte[] bytes)
+    public static byte[] Decompress(byte[] bytes, long expectedSize)
     {
         if (bytes.Length == 0)
         {
             return [];
         }
+        if (expectedSize < 0 || expectedSize > int.MaxValue)
+            throw new CfsArchiveException("Invalid legacy LZMA2 output size.");
 
         using var workspace = CompressionWorkspace.Create();
         var archivePath = Path.Combine(workspace.Path, "block.7z");
         File.WriteAllBytes(archivePath, bytes);
 
-        return Run7zrToBytes(workspace.Path, "e", "-so", archivePath);
+        return Run7zrToBytes(workspace.Path, expectedSize, "e", "-so", archivePath);
     }
 
     private static void Run7zr(string workingDirectory, params string[] arguments)
@@ -80,11 +82,22 @@ internal static class Lzma2Compressor
         }
     }
 
-    private static byte[] Run7zrToBytes(string workingDirectory, params string[] arguments)
+    private static byte[] Run7zrToBytes(string workingDirectory, long maximumOutputBytes, params string[] arguments)
     {
         using var process = Start7zr(workingDirectory, redirectOutput: true, arguments);
-        using var output = new MemoryStream();
-        process.StandardOutput.BaseStream.CopyTo(output);
+        using var output = new MemoryStream(checked((int)Math.Min(maximumOutputBytes, 16L * 1024 * 1024)));
+        var buffer = new byte[128 * 1024];
+        while (true)
+        {
+            var read = process.StandardOutput.BaseStream.Read(buffer, 0, buffer.Length);
+            if (read == 0) break;
+            if (output.Length > maximumOutputBytes - read)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                throw new CfsArchiveException("Legacy LZMA2 output exceeded the manifest size bound.");
+            }
+            output.Write(buffer, 0, read);
+        }
         var stderr = process.StandardError.ReadToEnd();
         process.WaitForExit();
 
@@ -93,6 +106,8 @@ internal static class Lzma2Compressor
             throw new CfsArchiveException($"LZMA2 decompression failed: {stderr.Trim()}");
         }
 
+        if (output.Length != maximumOutputBytes)
+            throw new CfsArchiveException("Legacy LZMA2 output did not match the manifest size.");
         return output.ToArray();
     }
 

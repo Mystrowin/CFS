@@ -10,6 +10,8 @@ var tests = new (string Name, Func<Task> Body)[]
 {
     ("empty CFS1 archive is durable transactional and renameable", EmptyArchiveIsTransactional),
     ("folder compression round-trips source bytes and allocates collision suffixes", CompressionRoundTripsAndCollidesSafely),
+    ("archive extraction validates input and allocates collision-free output folders", ArchiveExtractionIsValidatedAndCollisionSafe),
+    ("cancelled extraction preserves partial output in a visible recovery folder", CancelledExtractionPreservesPartialOutput),
     ("source traversal rejects invalid roots files and reparse points", SourceTraversalIsSafe),
     ("progress covers scanning and remains best-effort for every lifecycle failure", ProgressCoversScanningAndIsBestEffort),
     ("post-commit cleanup warning preserves output for owner and forwarded requests", CleanupWarningPreservesCommittedOutput),
@@ -75,6 +77,57 @@ static Task CompressionRoundTripsAndCollidesSafely()
     Assert(Snapshot(source).SequenceEqual(before), "source folder changed during compression");
     Assert(!Directory.EnumerateDirectories(workspace.Root, ".cfs-work-*").Any(), "successful compression leaked a work folder");
     return Task.CompletedTask;
+}
+
+static async Task ArchiveExtractionIsValidatedAndCollisionSafe()
+{
+    using var workspace = new TestWorkspace();
+    var source = Path.Combine(workspace.Root, "source");
+    Directory.CreateDirectory(Path.Combine(source, "nested"));
+    File.WriteAllText(Path.Combine(source, "nested", "payload.txt"), "extraction content");
+    var archivePath = Path.Combine(workspace.Root, "archive.cfs");
+    CfsArchive.CreateFromFolder(source, archivePath);
+    var operations = NewOperations();
+
+    Directory.CreateDirectory(Path.Combine(workspace.Root, "archive extracted"));
+    var first = await operations.ExtractArchiveAsync(archivePath);
+    var second = await operations.ExtractArchiveAsync(archivePath);
+    Assert(Path.GetFileName(first.OutputPath) == "archive extracted (2)", "first extraction folder name is wrong");
+    Assert(Path.GetFileName(second.OutputPath) == "archive extracted (3)", "second extraction folder collision suffix is wrong");
+    Assert(Snapshot(first.OutputPath).SequenceEqual(Snapshot(source)), "first extraction did not round-trip source bytes");
+    Assert(Snapshot(second.OutputPath).SequenceEqual(Snapshot(source)), "second extraction did not round-trip source bytes");
+
+    var corrupt = Path.Combine(workspace.Root, "corrupt.cfs");
+    File.WriteAllBytes(corrupt, [1, 2, 3]);
+    await AssertThrowsAsync<CfsArchiveException>(() => operations.ExtractArchiveAsync(corrupt));
+    Assert(!Directory.Exists(Path.Combine(workspace.Root, "corrupt extracted")), "invalid archive extraction created a destination folder");
+}
+
+static async Task CancelledExtractionPreservesPartialOutput()
+{
+    using var workspace = new TestWorkspace();
+    var source = Path.Combine(workspace.Root, "source");
+    Directory.CreateDirectory(source);
+    File.WriteAllText(Path.Combine(source, "first.txt"), "first");
+    File.WriteAllText(Path.Combine(source, "second.txt"), "second");
+    var archivePath = Path.Combine(workspace.Root, "interrupted.cfs");
+    CfsArchive.CreateFromFolder(source, archivePath);
+    var operations = NewOperations();
+    using var cancellation = new CancellationTokenSource();
+    var progress = new CallbackProgress<CfsProgress>(_ => cancellation.Cancel());
+
+    try
+    {
+        await operations.ExtractArchiveAsync(archivePath, progress, cancellation.Token);
+        throw new InvalidOperationException("cancelled extraction unexpectedly completed");
+    }
+    catch (CfsPartialExtractionException ex)
+    {
+        Assert(Directory.Exists(ex.OutputPath), "cancelled extraction did not preserve its partial output folder");
+        Assert(!Path.GetFileName(ex.OutputPath).StartsWith(".cfs-extract-", StringComparison.OrdinalIgnoreCase), "partial output was left only in a hidden staging folder");
+        Assert(Directory.EnumerateFiles(ex.OutputPath, "*.txt", SearchOption.AllDirectories).Any(), "cancelled extraction did not preserve any completed file");
+    }
+    Assert(!Directory.EnumerateDirectories(workspace.Root, ".cfs-extract-*").Any(), "cancelled extraction leaked its hidden staging folder");
 }
 
 static Task SourceTraversalIsSafe()
@@ -145,8 +198,12 @@ static async Task ProgressCoversScanningAndIsBestEffort()
 
     var fastSurface = new RecordingProgress();
     var fast = new CfsCreationOperations(() => fastSurface, TimeSpan.FromSeconds(2));
-    await fast.CompressFolderAsync(source);
+    var structured = new List<CfsProgress>();
+    await fast.CompressFolderAsync(source, new CallbackProgress<CfsProgress>(structured.Add));
     Assert(fastSurface.ShowCount == 0 && fastSurface.CloseCount == 0, "fast operation displayed progress");
+    Assert(structured.Any(value => value.Phase == "Scanning source folder")
+        && structured.Any(value => value.Phase == "Compressing files" && value.TotalItems == 1 && value.TotalBytes == 1),
+        "compression did not report real structured scanning and byte progress");
 
     var factoryThrows = new CfsCreationOperations(() => throw new InvalidOperationException("surface unavailable"), TimeSpan.Zero);
     var fallback = await factoryThrows.CompressFolderAsync(source);
@@ -270,15 +327,15 @@ static async Task CreationErrorsAreActionable()
     var create = await handler.HandleAsync(new BrokerRequest(1, "create-empty", TargetPath: wrong));
     Assert(!create.Success && create.ErrorCode == "create-empty-failed", "invalid empty target lacked a bounded error");
     var unknown = await handler.HandleAsync(new BrokerRequest(1, "erase"));
-    Assert(unknown.ErrorCode == "unknown-command" && unknown.Message!.Contains("create-empty") && unknown.Message.Contains("compress"), "supported command message is stale");
+    Assert(unknown.ErrorCode == CfsBrokerErrorCodes.InvalidRequest && unknown.Message!.Contains("create-empty") && unknown.Message.Contains("compress"), "supported command message is stale");
 }
 
 static Task ShellRegistrationIsExactAndSafe()
 {
     if (!OperatingSystem.IsWindows()) return Task.CompletedTask;
     using var workspace = new TestWorkspace(); var root = FindRepositoryRoot();
-    var built = Path.Combine(root, "src", "Cfs.Broker", "bin", "Release", "net8.0-windows", "Cfs.Broker.exe");
-    var broker = Path.Combine(workspace.Root, "Program Files", "CFS Beta", "Cfs.Broker.exe"); Directory.CreateDirectory(Path.GetDirectoryName(broker)!); File.Copy(built, broker);
+    var built = Path.Combine(root, "src", "Cfs.CommandClient", "bin", "Release", "net8.0-windows", "Cfs.CommandClient.exe");
+    var broker = Path.Combine(workspace.Root, "Program Files", "CFS Beta", "Cfs.CommandClient.exe"); Directory.CreateDirectory(Path.GetDirectoryName(broker)!); File.Copy(built, broker);
     var template = Path.Combine(workspace.Root, "ShellNew", "CFS-Empty.cfs"); Directory.CreateDirectory(Path.GetDirectoryName(template)!); CfsArchive.CreateEmpty(template);
     var basePath = $"Software\\CFS-Creation-Tests\\{Guid.NewGuid():N}\\Classes";
     var allOwnedBase = $"Software\\CFS-Creation-Tests\\{Guid.NewGuid():N}\\Classes";
@@ -289,7 +346,9 @@ static Task ShellRegistrationIsExactAndSafe()
         Assert(dry.ExitCode == 0 && dry.Output.Contains("OPEN_COMMAND=" + CfsShellRegistration.BuildOpenCommand(broker))
             && dry.Output.Contains("SHELLNEW_FILENAME=" + Path.GetFullPath(template))
             && dry.Output.Contains("FOLDER_VERB_LABEL=Compress to CFS")
-            && dry.Output.Contains("FOLDER_VERB_COMMAND=" + CfsShellRegistration.BuildCompressCommand(broker)), "dry-run registry values are not exact");
+            && dry.Output.Contains("FOLDER_VERB_COMMAND=" + CfsShellRegistration.BuildCompressCommand(broker))
+            && dry.Output.Contains("EXTRACT_VERB_LABEL=Extract entire CFS archive")
+            && dry.Output.Contains("EXTRACT_VERB_COMMAND=" + CfsShellRegistration.BuildExtractCommand(broker)), "dry-run registry values are not exact");
         Assert(RunScript(root, broker, template, basePath, false, false).ExitCode == 0, "isolated registration failed");
         using (var command = Registry.CurrentUser.CreateSubKey(basePath + @"\CFS.Archive\shell\open\command"))
         { command.SetValue("ForeignValue", "preserve"); command.CreateSubKey("ForeignChild")?.Dispose(); }
@@ -301,9 +360,10 @@ static Task ShellRegistrationIsExactAndSafe()
         Assert(retained.GetValue(null) is null, "unregister retained owned open command");
         Assert(Registry.CurrentUser.OpenSubKey(basePath + @"\.cfs") is null, "unregister retained owned extension/ShellNew keys");
         Assert(Registry.CurrentUser.OpenSubKey(basePath + @"\Directory\shell\CFS.Compress") is null, "unregister retained owned folder verb keys");
+        Assert(Registry.CurrentUser.OpenSubKey(basePath + @"\CFS.Archive\shell\CFS.Extract") is null, "unregister retained owned extract verb keys");
 
         // A tree containing only exact CFS-owned values must prune completely.
-        var broker2 = Path.Combine(workspace.Root, "second", "Cfs.Broker.exe"); Directory.CreateDirectory(Path.GetDirectoryName(broker2)!); File.Copy(built, broker2);
+        var broker2 = Path.Combine(workspace.Root, "second", "Cfs.CommandClient.exe"); Directory.CreateDirectory(Path.GetDirectoryName(broker2)!); File.Copy(built, broker2);
         var template2 = Path.Combine(workspace.Root, "second", "ShellNew", "CFS-Empty.cfs"); Directory.CreateDirectory(Path.GetDirectoryName(template2)!); CfsArchive.CreateEmpty(template2);
         Assert(RunScript(root, broker2, template2, allOwnedBase, false, false).ExitCode == 0, "all-owned isolated registration failed");
         Assert(RunScript(root, broker2, template2, allOwnedBase, false, true).ExitCode == 0, "all-owned isolated unregister failed");
@@ -318,7 +378,12 @@ static Task ShellRegistrationIsExactAndSafe()
             && installer.Contains("RegDeleteKeyIfEmpty(HKLM, 'Software\\Classes\\CFS.Archive\\shell\\open\\command')"), "installer lacks value-level ownership cleanup");
         Assert(installer.Contains("ValueData: \"CFS Compressed Folder\"")
             && installer.Contains("ValueData: \"{app}\\ShellNew\\CFS-Empty.cfs\"")
-            && installer.Split("Flags: uninsneveruninstall").Length - 1 >= 8, "installer label/template or ownership-safe uninstall flags are incomplete");
+            && !installer.Contains("Flags: uninsdelete", StringComparison.OrdinalIgnoreCase)
+            && installer.Contains("InstalledCommitCommand :=", StringComparison.Ordinal)
+            && installer.Contains("InstalledDiscardCommand :=", StringComparison.Ordinal)
+            && installer.Contains("InstalledStatusCommand :=", StringComparison.Ordinal)
+            && installer.Contains("RegDeleteValue(HKLM, 'Software\\Classes\\CFS.Archive\\shell\\CFS.Discard\\command', '')", StringComparison.Ordinal),
+            "installer label/template or ownership-safe value-matching cleanup is incomplete");
         var mainForm = File.ReadAllText(Path.Combine(root, "src", "Cfs.App", "MainForm.cs"));
         Assert(mainForm.Contains("typeKey.SetValue(null, \"CFS Compressed Folder\")")
             && mainForm.Contains("Path.Combine(AppContext.BaseDirectory, \"ShellNew\", \"CFS-Empty.cfs\")"), "MainForm registration label/template is inconsistent");
@@ -326,7 +391,7 @@ static Task ShellRegistrationIsExactAndSafe()
         var staged = RunDeveloperStage(root, stagePath);
         Assert(staged.ExitCode == 0 && staged.Output.Contains("DEVELOPER_STAGE_SHELLNEW_VALID=True"), "developer staging did not verify ShellNew output: " + staged.Output + staged.Error);
         var stagedTemplate = Path.Combine(stagePath, "ShellNew", "CFS-Empty.cfs");
-        Assert(File.Exists(Path.Combine(stagePath, "Cfs.App.exe")) && File.Exists(Path.Combine(stagePath, "Cfs.Broker.exe")), "developer stage lacks App or Broker");
+        Assert(File.Exists(Path.Combine(stagePath, "Cfs.App.exe")) && File.Exists(Path.Combine(stagePath, "Cfs.Broker.exe")) && File.Exists(Path.Combine(stagePath, "Cfs.CommandClient.exe")), "developer stage lacks App, Broker, or CommandClient");
         Assert(File.Exists(stagedTemplate) && CfsArchive.Validate(stagedTemplate).IsValid && CfsArchive.Load(stagedTemplate).ListEntries().Count == 0,
             "staged ShellNew template is not valid empty CFS1/v1");
         var stagedBytes = File.ReadAllBytes(stagedTemplate);
@@ -454,6 +519,10 @@ sealed class RecordingProgress : ICfsProgressSurface
     public int ShowCount; public int CloseCount; public DateTime ShownAt; public DateTime ClosedAt; public bool ThrowOnShow; public bool ThrowOnClose;
     public void Show(string message) { Interlocked.Increment(ref ShowCount); ShownAt = DateTime.UtcNow; if (ThrowOnShow) throw new InvalidOperationException("show"); }
     public void Close() { Interlocked.Increment(ref CloseCount); ClosedAt = DateTime.UtcNow; if (ThrowOnClose) throw new InvalidOperationException("close"); }
+}
+sealed class CallbackProgress<T>(Action<T> callback) : IProgress<T>
+{
+    public void Report(T value) => callback(value);
 }
 sealed class NoOpExplorer : ICfsExplorerLauncher { public void OpenFolder(string folderPath) { } }
 sealed class FakeSession(string mountPath) : ICfsBrokerSession { public string MountPath { get; } = mountPath; public ValueTask DisposeAsync() { if (Directory.Exists(MountPath)) Directory.Delete(MountPath, true); return ValueTask.CompletedTask; } }

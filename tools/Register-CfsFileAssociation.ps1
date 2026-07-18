@@ -1,6 +1,6 @@
 param(
-    [Alias('AppPath')]
-    [string]$BrokerPath,
+    [Alias('AppPath', 'BrokerPath')]
+    [string]$CommandClientPath,
     [string]$EmptyTemplatePath,
     [string]$RegistryBasePath = 'Software\Classes',
     [switch]$Unregister,
@@ -19,18 +19,18 @@ function Remove-EmptyKey([string]$keyPath) {
     if ($empty) { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($keyPath, $false) }
 }
 
-if ([string]::IsNullOrWhiteSpace($BrokerPath)) {
-    $packaged = Join-Path $PSScriptRoot 'Cfs.Broker.exe'
-    $developer = Join-Path $repoRoot 'src\Cfs.Broker\bin\Debug\net8.0-windows\Cfs.Broker.exe'
-    if ($Unregister) { $BrokerPath = $packaged }
-    elseif (Test-Path -LiteralPath $packaged) { $BrokerPath = $packaged }
-    elseif (Test-Path -LiteralPath $developer) { $BrokerPath = $developer }
-    else { throw 'Pass -BrokerPath or build Cfs.Broker first.' }
+if ([string]::IsNullOrWhiteSpace($CommandClientPath)) {
+    $packaged = Join-Path $PSScriptRoot 'Cfs.CommandClient.exe'
+    $developer = Join-Path $repoRoot 'src\Cfs.CommandClient\bin\Debug\net8.0-windows\Cfs.CommandClient.exe'
+    if ($Unregister) { $CommandClientPath = $packaged }
+    elseif (Test-Path -LiteralPath $packaged) { $CommandClientPath = $packaged }
+    elseif (Test-Path -LiteralPath $developer) { $CommandClientPath = $developer }
+    else { throw 'Pass -CommandClientPath or build Cfs.CommandClient first.' }
 }
 
-$resolvedBrokerPath = if ($Unregister) { [IO.Path]::GetFullPath($BrokerPath) } else { (Resolve-Path -LiteralPath $BrokerPath).Path }
-if (-not [System.IO.Path]::GetFileName($resolvedBrokerPath).Equals('Cfs.Broker.exe', [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Expected Cfs.Broker.exe. Cfs.App and Cfs.Cli are not shell handlers.'
+$resolvedCommandClientPath = if ($Unregister) { [IO.Path]::GetFullPath($CommandClientPath) } else { (Resolve-Path -LiteralPath $CommandClientPath).Path }
+if (-not [System.IO.Path]::GetFileName($resolvedCommandClientPath).Equals('Cfs.CommandClient.exe', [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Expected Cfs.CommandClient.exe. Cfs.Broker, Cfs.App, and Cfs.Cli are not shell handlers.'
 }
 
 if ([string]::IsNullOrWhiteSpace($EmptyTemplatePath)) {
@@ -41,9 +41,17 @@ if (-not $Unregister -and -not (Test-Path -LiteralPath $resolvedTemplatePath)) {
     throw "The generated empty CFS template was not found at $resolvedTemplatePath."
 }
 
-$openCommand = '"' + $resolvedBrokerPath + '" open "%1"'
-$compressCommand = '"' + $resolvedBrokerPath + '" compress "%1"'
-$closeCommand = '"' + $resolvedBrokerPath + '" close "%1"'
+$openCommand = '"' + $resolvedCommandClientPath + '" open "%1"'
+$compressCommand = '"' + $resolvedCommandClientPath + '" compress "%1"'
+$closeCommand = '"' + $resolvedCommandClientPath + '" close "%1"'
+$extractCommand = '"' + $resolvedCommandClientPath + '" extract "%1"'
+$commitCommand = '"' + $resolvedCommandClientPath + '" commit "%1"'
+$discardCommand = '"' + $resolvedCommandClientPath + '" discard "%1"'
+$statusCommand = '"' + $resolvedCommandClientPath + '" status "%1"'
+$recoverCommand = '"' + $resolvedCommandClientPath + '" recover "%1"'
+$recoveryStatusCommand = '"' + $resolvedCommandClientPath + '" recovery-status "%1"'
+$discardRecoveryCommand = '"' + $resolvedCommandClientPath + '" discard-recovery "%1"'
+$openReadOnlyCommand = '"' + $resolvedCommandClientPath + '" open-readonly "%1"'
 
 if ($DryRun) {
     Write-Output "OPEN_COMMAND=$openCommand"
@@ -52,6 +60,22 @@ if ($DryRun) {
     Write-Output "FOLDER_VERB_COMMAND=$compressCommand"
     Write-Output 'CLOSE_VERB_LABEL=Close CFS'
     Write-Output "CLOSE_VERB_COMMAND=$closeCommand"
+    Write-Output 'EXTRACT_VERB_LABEL=Extract entire CFS archive'
+    Write-Output "EXTRACT_VERB_COMMAND=$extractCommand"
+    Write-Output 'COMMIT_VERB_LABEL=Commit pending changes'
+    Write-Output "COMMIT_VERB_COMMAND=$commitCommand"
+    Write-Output 'DISCARD_VERB_LABEL=Discard pending changes'
+    Write-Output "DISCARD_VERB_COMMAND=$discardCommand"
+    Write-Output 'STATUS_VERB_LABEL=Show CFS status'
+    Write-Output "STATUS_VERB_COMMAND=$statusCommand"
+    Write-Output 'RECOVER_VERB_LABEL=Open recovery workspace'
+    Write-Output "RECOVER_VERB_COMMAND=$recoverCommand"
+    Write-Output 'RECOVERY_STATUS_VERB_LABEL=Show recovery status'
+    Write-Output "RECOVERY_STATUS_VERB_COMMAND=$recoveryStatusCommand"
+    Write-Output 'DISCARD_RECOVERY_VERB_LABEL=Discard recovery data'
+    Write-Output "DISCARD_RECOVERY_VERB_COMMAND=$discardRecoveryCommand"
+    Write-Output 'OPEN_READONLY_VERB_LABEL=Open read-only (full extraction)'
+    Write-Output "OPEN_READONLY_VERB_COMMAND=$openReadOnlyCommand"
     if ($Unregister) { Write-Output 'UNREGISTER=ownership-checked' }
     return
 }
@@ -78,8 +102,50 @@ if ($Unregister) {
     $closeVerbKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($closeVerbPath, $true)
     if ($null -ne $closeVerbKey) {
         if ([string]$closeVerbKey.GetValue($null) -eq 'Close CFS') { $closeVerbKey.DeleteValue('', $false) }
-        if ([string]$closeVerbKey.GetValue('Icon') -eq ($resolvedBrokerPath + ',0')) { $closeVerbKey.DeleteValue('Icon', $false) }
+        if ([string]$closeVerbKey.GetValue('Icon') -eq ($resolvedCommandClientPath + ',0')) { $closeVerbKey.DeleteValue('Icon', $false) }
         $closeVerbKey.Dispose()
+    }
+
+    $extractVerbPath = ClassKey 'CFS.Archive\shell\CFS.Extract'
+    $extractCommandPath = $extractVerbPath + '\command'
+    $extractCommandKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($extractCommandPath)
+    $registeredExtract = if ($null -ne $extractCommandKey) { [string]$extractCommandKey.GetValue($null) } else { '' }
+    if ($null -ne $extractCommandKey) { $extractCommandKey.Dispose() }
+    if ($registeredExtract.Equals($extractCommand, [StringComparison]::OrdinalIgnoreCase)) {
+        $ownedKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($extractCommandPath, $true)
+        $ownedKey.DeleteValue('', $false); $ownedKey.Dispose()
+    }
+    $extractVerbKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($extractVerbPath, $true)
+    if ($null -ne $extractVerbKey) {
+        if ([string]$extractVerbKey.GetValue($null) -eq 'Extract entire CFS archive') { $extractVerbKey.DeleteValue('', $false) }
+        if ([string]$extractVerbKey.GetValue('Icon') -eq ($resolvedCommandClientPath + ',0')) { $extractVerbKey.DeleteValue('Icon', $false) }
+        $extractVerbKey.Dispose()
+    }
+    foreach ($ownedVerb in @(
+        @{ Name = 'CFS.Commit'; Command = $commitCommand; Label = 'Commit pending changes' },
+        @{ Name = 'CFS.Discard'; Command = $discardCommand; Label = 'Discard pending changes' },
+        @{ Name = 'CFS.Status'; Command = $statusCommand; Label = 'Show CFS status' },
+        @{ Name = 'CFS.Recover'; Command = $recoverCommand; Label = 'Open recovery workspace' },
+        @{ Name = 'CFS.RecoveryStatus'; Command = $recoveryStatusCommand; Label = 'Show recovery status' },
+        @{ Name = 'CFS.DiscardRecovery'; Command = $discardRecoveryCommand; Label = 'Discard recovery data' },
+        @{ Name = 'CFS.OpenReadOnly'; Command = $openReadOnlyCommand; Label = 'Open read-only (full extraction)' })) {
+        $ownedVerbPath = ClassKey ('CFS.Archive\shell\' + $ownedVerb.Name)
+        $ownedCommandPath = $ownedVerbPath + '\command'
+        $ownedCommandKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($ownedCommandPath)
+        $registeredCommand = if ($null -ne $ownedCommandKey) { [string]$ownedCommandKey.GetValue($null) } else { '' }
+        if ($null -ne $ownedCommandKey) { $ownedCommandKey.Dispose() }
+        if ($registeredCommand.Equals($ownedVerb.Command, [StringComparison]::OrdinalIgnoreCase)) {
+            $writeCommandKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($ownedCommandPath, $true)
+            $writeCommandKey.DeleteValue('', $false); $writeCommandKey.Dispose()
+        }
+        $ownedVerbKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($ownedVerbPath, $true)
+        if ($null -ne $ownedVerbKey) {
+            if ([string]$ownedVerbKey.GetValue($null) -eq $ownedVerb.Label) { $ownedVerbKey.DeleteValue('', $false) }
+            if ([string]$ownedVerbKey.GetValue('Icon') -eq ($resolvedCommandClientPath + ',0')) { $ownedVerbKey.DeleteValue('Icon', $false) }
+            $ownedVerbKey.Dispose()
+        }
+        Remove-EmptyKey $ownedCommandPath
+        Remove-EmptyKey $ownedVerbPath
     }
 
     $typePath = ClassKey 'CFS.Archive'
@@ -109,7 +175,7 @@ if ($Unregister) {
     $verbKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($verbPath, $true)
     if ($null -ne $verbKey) {
         if ([string]$verbKey.GetValue($null) -eq 'Compress to CFS') { $verbKey.DeleteValue('', $false) }
-        if ([string]$verbKey.GetValue('Icon') -eq ($resolvedBrokerPath + ',0')) { $verbKey.DeleteValue('Icon', $false) }
+        if ([string]$verbKey.GetValue('Icon') -eq ($resolvedCommandClientPath + ',0')) { $verbKey.DeleteValue('Icon', $false) }
         $verbKey.Dispose()
     }
 
@@ -120,7 +186,7 @@ if ($Unregister) {
         $extension.Dispose()
     }
     foreach ($key in @(
-        $openKeyPath, (ClassKey 'CFS.Archive\shell\open'), $closeCommandPath, $closeVerbPath, (ClassKey 'CFS.Archive\shell'), (ClassKey 'CFS.Archive\DefaultIcon'),
+        $openKeyPath, (ClassKey 'CFS.Archive\shell\open'), $closeCommandPath, $closeVerbPath, $extractCommandPath, $extractVerbPath, (ClassKey 'CFS.Archive\shell'), (ClassKey 'CFS.Archive\DefaultIcon'),
         $typePath, ($verbPath + '\command'), $verbPath, (ClassKey 'Directory\shell'), (ClassKey 'Directory'),
         $shellNewPath, $extensionPath)) { Remove-EmptyKey $key }
     Write-Host 'CFS-owned current-user shell entries were removed when their exact values matched.'
@@ -136,13 +202,30 @@ $commandKey.SetValue($null, $openCommand); $commandKey.Dispose()
 $shellNewKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey '.cfs\ShellNew'))
 $shellNewKey.SetValue('FileName', $resolvedTemplatePath); $shellNewKey.Dispose()
 $verbKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'Directory\shell\CFS.Compress'))
-$verbKey.SetValue($null, 'Compress to CFS'); $verbKey.SetValue('Icon', $resolvedBrokerPath + ',0'); $verbKey.Dispose()
+$verbKey.SetValue($null, 'Compress to CFS'); $verbKey.SetValue('Icon', $resolvedCommandClientPath + ',0'); $verbKey.Dispose()
 $verbCommandKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'Directory\shell\CFS.Compress\command'))
 $verbCommandKey.SetValue($null, $compressCommand); $verbCommandKey.Dispose()
 $closeVerbKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'CFS.Archive\shell\CFS.Close'))
-$closeVerbKey.SetValue($null, 'Close CFS'); $closeVerbKey.SetValue('Icon', $resolvedBrokerPath + ',0'); $closeVerbKey.Dispose()
+$closeVerbKey.SetValue($null, 'Close CFS'); $closeVerbKey.SetValue('Icon', $resolvedCommandClientPath + ',0'); $closeVerbKey.Dispose()
 $closeCommandKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'CFS.Archive\shell\CFS.Close\command'))
 $closeCommandKey.SetValue($null, $closeCommand); $closeCommandKey.Dispose()
+$extractVerbKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'CFS.Archive\shell\CFS.Extract'))
+$extractVerbKey.SetValue($null, 'Extract entire CFS archive'); $extractVerbKey.SetValue('Icon', $resolvedCommandClientPath + ',0'); $extractVerbKey.Dispose()
+$extractCommandKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'CFS.Archive\shell\CFS.Extract\command'))
+$extractCommandKey.SetValue($null, $extractCommand); $extractCommandKey.Dispose()
+foreach ($verb in @(
+    @{ Name = 'CFS.Commit'; Command = $commitCommand; Label = 'Commit pending changes' },
+    @{ Name = 'CFS.Discard'; Command = $discardCommand; Label = 'Discard pending changes' },
+    @{ Name = 'CFS.Status'; Command = $statusCommand; Label = 'Show CFS status' },
+    @{ Name = 'CFS.Recover'; Command = $recoverCommand; Label = 'Open recovery workspace' },
+    @{ Name = 'CFS.RecoveryStatus'; Command = $recoveryStatusCommand; Label = 'Show recovery status' },
+    @{ Name = 'CFS.DiscardRecovery'; Command = $discardRecoveryCommand; Label = 'Discard recovery data' },
+    @{ Name = 'CFS.OpenReadOnly'; Command = $openReadOnlyCommand; Label = 'Open read-only (full extraction)' })) {
+    $newVerbKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey ('CFS.Archive\shell\' + $verb.Name)))
+    $newVerbKey.SetValue($null, $verb.Label); $newVerbKey.SetValue('Icon', $resolvedCommandClientPath + ',0'); $newVerbKey.Dispose()
+    $newCommandKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey ('CFS.Archive\shell\' + $verb.Name + '\command')))
+    $newCommandKey.SetValue($null, $verb.Command); $newCommandKey.Dispose()
+}
 Write-Host 'CFS shell open, ShellNew, Compress to CFS, and Close CFS entries were registered for the current user.'
 Write-Host $openCommand
 Write-Host $compressCommand

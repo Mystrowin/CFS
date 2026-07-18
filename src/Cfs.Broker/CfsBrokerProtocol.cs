@@ -3,7 +3,17 @@ using System.Text.Json;
 
 namespace Cfs.Broker;
 
-public sealed record BrokerRequest(int Version, string Command, string? ArchivePath = null, string? SourcePath = null, string? TargetPath = null);
+public sealed record BrokerRequest(
+    int Version,
+    string Command,
+    string? ArchivePath = null,
+    string? SourcePath = null,
+    string? TargetPath = null,
+    string? RequestId = null,
+    string? SessionId = null,
+    ulong? ExpectedGeneration = null,
+    string? CancellationId = null,
+    string? OperationId = null);
 
 public sealed record BrokerResponse(
     int Version,
@@ -16,13 +26,61 @@ public sealed record BrokerResponse(
     string? Warning = null,
     string? PersistenceState = null,
     bool IsDirty = false,
-    long DirtyGeneration = 0,
-    long CommittedGeneration = 0,
+    ulong DirtyGeneration = 0,
+    ulong CommittedGeneration = 0,
+    ulong MutationSequence = 0,
     DateTimeOffset? LastCommitUtc = null,
     string? LastCommitError = null,
     int SessionCount = 0,
     int CreatedSessionCount = 0,
-    int BrokerProcessId = 0);
+    int BrokerProcessId = 0,
+    string? RequestId = null,
+    string? SessionId = null,
+    string? OperationId = null,
+    string? CancellationId = null,
+    string? OperationState = null,
+    string? OperationResultCode = null,
+    string? OperationPhase = null,
+    string? CurrentItem = null,
+    long CompletedItems = 0,
+    long? TotalItems = null,
+    long CompletedBytes = 0,
+    long? TotalBytes = null,
+    double? Percent = null,
+    bool CanCancel = false,
+    bool RecoveryFound = false,
+    bool RecoveryOwnershipVerified = false,
+    bool OriginalArchiveValid = false,
+    string? RecoveryState = null,
+    string? RecoveryPhase = null,
+    ulong RecoveryDirtyGeneration = 0,
+    ulong RecoveryCommittedGeneration = 0,
+    ulong RecoveryMutationSequence = 0,
+    string? ProtocolCapabilities = null);
+
+public static class CfsBrokerErrorCodes
+{
+    public const string Cancelled = "CFS_E_CANCELLED";
+    public const string AccessDenied = "CFS_E_ACCESS_DENIED";
+    public const string InvalidRequest = "CFS_E_INVALID_REQUEST";
+    public const string ProtocolUnsupported = "CFS_E_PROTOCOL_UNSUPPORTED";
+    public const string BrokerStartFailed = "CFS_E_BROKER_START_FAILED";
+    public const string BrokerTimeout = "CFS_E_BROKER_TIMEOUT";
+    public const string SessionNotFound = "CFS_E_SESSION_NOT_FOUND";
+    public const string SessionConflict = "CFS_E_SESSION_CONFLICT";
+    public const string GenerationConflict = "CFS_E_GENERATION_CONFLICT";
+    public const string ExternalModification = "CFS_E_EXTERNAL_MODIFICATION";
+    public const string ProjFsUnavailable = "CFS_E_PROJFS_UNAVAILABLE";
+    public const string ArchiveVersionUnsupported = "CFS_E_ARCHIVE_VERSION_UNSUPPORTED";
+    public const string RecoveryRequired = "CFS_E_RECOVERY_REQUIRED";
+    public const string FileInUse = "CFS_E_FILE_IN_USE";
+    public const string CommitFailed = "CFS_E_COMMIT_FAILED";
+    public const string DiscardFailed = "CFS_E_DISCARD_FAILED";
+    public const string InsufficientSpace = "CFS_E_INSUFFICIENT_SPACE";
+    public const string UnsupportedEntry = "CFS_E_UNSUPPORTED_ENTRY";
+    public const string UnsupportedStorage = "CFS_E_UNSUPPORTED_STORAGE";
+    public const string InstallationDamaged = "CFS_E_INSTALLATION_DAMAGED";
+}
 
 public sealed class BrokerProtocolException : Exception
 {
@@ -34,8 +92,9 @@ public sealed class BrokerProtocolException : Exception
 
 public static class CfsBrokerProtocol
 {
-    public const int CurrentVersion = 1;
-    public const int MaximumPayloadBytes = 64 * 1024;
+    public const int CurrentVersion = 2;
+    public const int MinimumSupportedVersion = 1;
+    public const int MaximumPayloadBytes = 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static async Task WriteAsync<T>(Stream stream, T message, CancellationToken cancellationToken = default)

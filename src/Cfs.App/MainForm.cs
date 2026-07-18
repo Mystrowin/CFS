@@ -521,7 +521,7 @@ public sealed class MainForm : Form
     private void RegisterFileAssociation()
     {
         var command = BuildOpenCommand();
-        var brokerPath = Path.Combine(AppContext.BaseDirectory, CfsShellRegistration.BrokerExecutableName);
+        var brokerPath = Path.Combine(AppContext.BaseDirectory, CfsShellRegistration.CommandClientExecutableName);
         var templatePath = Path.Combine(AppContext.BaseDirectory, "ShellNew", "CFS-Empty.cfs");
         if (!File.Exists(templatePath)) throw new FileNotFoundException("The packaged CFS ShellNew template is missing. Repair the installation.", templatePath);
         using (var extensionKey = Registry.CurrentUser.CreateSubKey(@"Software\Classes\.cfs"))
@@ -546,6 +546,15 @@ public sealed class MainForm : Form
         using (var closeCommand = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CFS.Archive\shell\CFS.Close\command"))
         {
             closeCommand.SetValue(null, CfsShellRegistration.BuildCloseCommand(brokerPath));
+        }
+        using (var extractVerb = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CFS.Archive\shell\CFS.Extract"))
+        {
+            extractVerb.SetValue(null, "Extract entire CFS archive");
+            extractVerb.SetValue("Icon", brokerPath + ",0");
+        }
+        using (var extractCommand = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CFS.Archive\shell\CFS.Extract\command"))
+        {
+            extractCommand.SetValue(null, CfsShellRegistration.BuildExtractCommand(brokerPath));
         }
         using (var shellNewKey = Registry.CurrentUser.CreateSubKey(@"Software\Classes\.cfs\ShellNew"))
         {
@@ -1074,7 +1083,7 @@ public sealed class MainForm : Form
 
     private static string BuildOpenCommand()
     {
-        var brokerPath = Path.Combine(AppContext.BaseDirectory, CfsShellRegistration.BrokerExecutableName);
+        var brokerPath = Path.Combine(AppContext.BaseDirectory, CfsShellRegistration.CommandClientExecutableName);
         if (!File.Exists(brokerPath))
             throw new FileNotFoundException("Cfs.Broker.exe is not installed beside Cfs.App. Repair the CFS installation before registering .cfs files.", brokerPath);
         return CfsShellRegistration.BuildOpenCommand(brokerPath);

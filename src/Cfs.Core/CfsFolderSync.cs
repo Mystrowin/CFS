@@ -15,13 +15,13 @@ public static class CfsFolderSync
         archive.ExtractAll(mountFolder);
     }
 
-    public static void ApplyFolderChanges(CfsArchive archive, string mountedFolder, IProgress<CfsProgress>? progress = null, CancellationToken cancellationToken = default, IReadOnlySet<string>? excludedEntryPaths = null)
+    public static bool ApplyFolderChanges(CfsArchive archive, string mountedFolder, IProgress<CfsProgress>? progress = null, CancellationToken cancellationToken = default, IReadOnlySet<string>? excludedEntryPaths = null, bool persist = true)
     {
         if (!Directory.Exists(mountedFolder))
         {
             throw new DirectoryNotFoundException(mountedFolder);
         }
 
-        archive.ReplaceWithFolderSnapshot(mountedFolder, MountMarkerFileName, progress, cancellationToken, excludedEntryPaths);
+        return archive.ReplaceWithFolderSnapshot(mountedFolder, MountMarkerFileName, progress, cancellationToken, excludedEntryPaths, persist);
     }
 }

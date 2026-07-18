@@ -16,8 +16,8 @@ if ([string]::IsNullOrWhiteSpace($version) -or $version -notmatch '^\d+\.\d+\.\d
 }
 $packageName = "CFS-$version-$label-win-x64"
 if ($DeveloperStaging) {
-    if ($version -ne '0.2.0' -or $label -ne 'Beta' -or $Runtime -ne 'win-x64') { throw 'Developer staging currently supports only CFS 0.2.0 Beta for win-x64.' }
-    if ([string]::IsNullOrWhiteSpace($OutputPath)) { $OutputPath = Join-Path $repoRoot 'obj\Cfs-0.2.0-Beta-developer-stage' }
+    if ($label -ne 'Beta' -or $Runtime -ne 'win-x64') { throw 'Developer staging currently supports Beta win-x64 releases only.' }
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) { $OutputPath = Join-Path $repoRoot "obj\Cfs-$version-$label-developer-stage" }
     $resolvedStage = [IO.Path]::GetFullPath($OutputPath)
     $resolvedRepo = [IO.Path]::GetFullPath($repoRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
     if (-not $resolvedStage.StartsWith($resolvedRepo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Developer staging must stay inside the repository.' }
@@ -33,7 +33,9 @@ if ($DeveloperStaging) {
     if ($LASTEXITCODE -ne 0) { throw 'Cfs.App developer staging failed.' }
     & $dotnet publish (Join-Path $repoRoot 'src\Cfs.Broker\Cfs.Broker.csproj') -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=false --ignore-failed-sources -o $resolvedStage
     if ($LASTEXITCODE -ne 0) { throw 'Cfs.Broker developer staging failed.' }
-    foreach ($required in @('Cfs.App.exe','Cfs.Broker.exe')) { if (-not (Test-Path -LiteralPath (Join-Path $resolvedStage $required))) { throw "Developer staging is missing $required." } }
+    & $dotnet publish (Join-Path $repoRoot 'src\Cfs.CommandClient\Cfs.CommandClient.csproj') -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=false --ignore-failed-sources -o $resolvedStage
+    if ($LASTEXITCODE -ne 0) { throw 'Cfs.CommandClient developer staging failed.' }
+    foreach ($required in @('Cfs.App.exe','Cfs.Broker.exe','Cfs.CommandClient.exe')) { if (-not (Test-Path -LiteralPath (Join-Path $resolvedStage $required))) { throw "Developer staging is missing $required." } }
     $shellNewDirectory = Join-Path $resolvedStage 'ShellNew'
     New-Item -ItemType Directory -Path $shellNewDirectory -Force | Out-Null
     $emptyTemplate = Join-Path $shellNewDirectory 'CFS-Empty.cfs'
@@ -45,6 +47,7 @@ if ($DeveloperStaging) {
     Write-Host "DEVELOPER_STAGE=$resolvedStage"
     Write-Host 'DEVELOPER_STAGE_APP=True'
     Write-Host 'DEVELOPER_STAGE_BROKER=True'
+    Write-Host 'DEVELOPER_STAGE_COMMAND_CLIENT=True'
     Write-Host 'DEVELOPER_STAGE_SHELLNEW_VALID=True'
     return
 }
@@ -85,7 +88,9 @@ New-Item -ItemType Directory -Path $resolvedOutput -Force | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
 & $dotnet publish (Join-Path $repoRoot 'src\Cfs.Broker\Cfs.Broker.csproj') -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=false -o $resolvedOutput
 if ($LASTEXITCODE -ne 0) { throw 'Cfs.Broker publish failed.' }
-if (-not (Test-Path -LiteralPath (Join-Path $resolvedOutput 'Cfs.Broker.exe'))) { throw 'Published staging is missing Cfs.Broker.exe.' }
+& $dotnet publish (Join-Path $repoRoot 'src\Cfs.CommandClient\Cfs.CommandClient.csproj') -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=false -o $resolvedOutput
+if ($LASTEXITCODE -ne 0) { throw 'Cfs.CommandClient publish failed.' }
+foreach ($required in @('Cfs.Broker.exe','Cfs.CommandClient.exe')) { if (-not (Test-Path -LiteralPath (Join-Path $resolvedOutput $required))) { throw "Published staging is missing $required." } }
 Get-ChildItem -LiteralPath $resolvedOutput -Filter '*.pdb' -File | Remove-Item -Force
 
 $shellNewDirectory = Join-Path $resolvedOutput 'ShellNew'

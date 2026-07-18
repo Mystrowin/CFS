@@ -84,7 +84,7 @@ dirtyGeneration = 2
 committedGeneration = 0
 transactionState = 1
 killedBrokerPid = 10948
-recoveryErrorCode = recovery-needed
+recoveryErrorCode = recovery-needed (legacy pre-0.3 code; current protocol returns CFS_E_RECOVERY_REQUIRED)
 baselineArchiveSha256 = B32A0303E95A2966370CD46559F54A2C61AD4E7BFC19698CDC26AC3C2D867E76
 archiveSha256AfterReopen = B32A0303E95A2966370CD46559F54A2C61AD4E7BFC19698CDC26AC3C2D867E76
 lastValidArchivePreserved = true
@@ -94,4 +94,4 @@ The recovery response explicitly reported that the valid prior archive and marke
 
 ## Scope and interpretation
 
-This report documents a verification-environment blocker. It is **not** evidence that the CFS recovery implementation is corrupt or that ProjFS is disabled. The automated recovery tests cover marker integrity, interrupted writes, invalid candidates, corrupt archives, stale-session ownership, and CFS 0.1 byte identity; the missing evidence is the real Windows broker-kill/reopen workflow under an elevated, unrestricted process.
+This report preserves the historical 0.2 verification record. The elevated dirty broker-kill/reopen workflow subsequently passed, and the current 0.3 automated recovery suite passes **9/9**, including ownership-verified inspection and explicit discard. The remaining release blockers are the clean Windows VM acceptance matrix and production Authenticode signing, not local ProjFS recovery detection.
