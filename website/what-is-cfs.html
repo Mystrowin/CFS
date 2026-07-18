@@ -30,7 +30,7 @@
             "headline": "What Is CFS? Editable Compressed Archives for Windows",
             "description": "A technical overview of CFS and its ProjFS-backed compressed archive workflow for Windows.",
             "datePublished": "2026-07-17",
-            "dateModified": "2026-07-17",
+            "dateModified": "2026-07-18",
             "mainEntityOfPage": "https://mystrowin.github.io/CFS/what-is-cfs.html",
             "author": {
               "@type": "Person",
@@ -70,6 +70,7 @@
       }
     </script>
     <link rel="stylesheet" href="styles.css">
+    <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cefcc54a364625b4ff0bf56c9099fd"}'></script><!-- End Cloudflare Web Analytics -->
   </head>
   <body>
     <div class="site-shell">
@@ -146,7 +147,7 @@
         <section class="split-section" id="requirements">
           <div class="requirements-panel">
             <p class="kicker">System requirements</p><h2>Designed for supported x64 Windows systems.</h2>
-            <ul class="check-list"><li><span aria-hidden="true">✓</span>Windows 10 version 1809 or newer</li><li><span aria-hidden="true">✓</span>Windows 11</li><li><span aria-hidden="true">✓</span>64-bit Windows</li><li><span aria-hidden="true">✓</span>Windows Projected File System for mounted access</li></ul>
+            <ul class="check-list"><li><span aria-hidden="true">✓</span>Windows 11</li><li><span aria-hidden="true">✓</span>64-bit Windows</li><li><span aria-hidden="true">✓</span>Local NTFS storage for writable archives</li><li><span aria-hidden="true">✓</span>Windows Projected File System for mounted access</li></ul>
           </div>
           <div class="projfs-panel"><span class="feature-label">NOT A BACKUP REPLACEMENT</span><h3>Know the beta boundary before testing.</h3><p>CFS is not production-ready and does not promise compatibility with every Windows application. Mounting, saving, performance, and data-integrity bugs may still exist.</p></div>
         </section>
@@ -154,7 +155,7 @@
         <section class="section" id="questions">
           <div class="section-heading"><span class="section-index">03</span><div><p class="kicker">Common questions</p><h2>What testers should know first.</h2></div></div>
           <div class="steps-grid">
-            <article class="step-card"><h3>Does CFS extract everything first?</h3><p>Not during ProjFS mounting. CFS projects the directory structure and supplies file contents on demand. A full-extraction compatibility mode is available when necessary.</p></article>
+            <article class="step-card"><h3>Does CFS extract everything first?</h3><p>No. CFS uses ProjFS to project the directory structure and supplies file contents on demand. ProjFS is required for this Explorer workflow.</p></article>
             <article class="step-card"><h3>Can files be edited?</h3><p>CFS provides a folder-style editing workflow. Supported changes are written back when the workspace is saved and unmounted.</p></article>
             <article class="step-card"><h3>Is the beta free?</h3><p>The current installer and portable packages are available at no charge from the public GitHub release page.</p></article>
           </div>
@@ -167,7 +168,7 @@
       </main>
 
       <footer>
-        <div class="footer-brand"><span class="brand-mark small" aria-hidden="true">CFS</span><div><strong>CFS 0.2.0 Beta</strong><p>Experimental compressed archive software for Windows.</p></div></div>
+        <div class="footer-brand"><span class="brand-mark small" aria-hidden="true">CFS</span><div><strong>CFS 0.3.0 Beta</strong><p>Experimental compressed archive software for Windows.</p></div></div>
         <div class="footer-links"><a href="./">Main website</a><a href="https://github.com/Mystrowin/CFS">Source repository</a><a href="./#download">Downloads</a></div>
         <p class="copyright">Copyright © 2026 Neeraj Pragnya Krishna Vasagiri. All rights reserved.</p>
       </footer>
