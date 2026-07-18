@@ -67,7 +67,7 @@ internal static class Program
                             session.CommitChanges(archive, cancellationToken: token);
                         }, token);
                     };
-                    return Task.FromResult<ICfsBrokerSession>(new CfsBrokerMountedSession(identity.FullPath, session, quietPeriod, commit: commit, transaction: transaction));
+                    return Task.FromResult<ICfsBrokerSession>(new CfsBrokerMountedSession(identity.FullPath, session, quietPeriod, commit: commit, transaction: transaction, authoritativeIdentity: identity));
                 }
                 catch
                 {
@@ -119,7 +119,7 @@ internal static class Program
     {
         if (args.Length == 0) throw new BrokerRequestException("missing-command", "Use 'Cfs.Broker.exe open <archive.cfs>'.");
         var command = args[0].Trim().ToLowerInvariant();
-        return command switch
+        return WithRequestId(command switch
         {
             "open" when args.Length >= 2 => new(CfsBrokerProtocol.CurrentVersion, command, args[1]),
             "close" when args.Length >= 2 => new(CfsBrokerProtocol.CurrentVersion, command, args[1]),
@@ -130,8 +130,10 @@ internal static class Program
             "shutdown" => new(CfsBrokerProtocol.CurrentVersion, command),
             "open" or "close" or "create-empty" or "compress" => throw new BrokerRequestException("invalid-path", $"The {command} command requires a path."),
             _ => new(CfsBrokerProtocol.CurrentVersion, command)
-        };
+        });
     }
+
+    private static BrokerRequest WithRequestId(BrokerRequest request) => request with { RequestId = Guid.NewGuid().ToString("N") };
 
     private static string? GetOption(string[] args, string name)
     {

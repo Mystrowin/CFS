@@ -41,8 +41,11 @@ public sealed class CfsBrokerRequestHandler
 
     public async Task<BrokerResponse> HandleAsync(BrokerRequest request, CancellationToken cancellationToken = default)
     {
-        if (request.Version != CfsBrokerProtocol.CurrentVersion)
-            return Error("unsupported-version", $"Broker protocol version {request.Version} is not supported; expected {CfsBrokerProtocol.CurrentVersion}.");
+        if (request.Version < CfsBrokerProtocol.MinimumSupportedVersion || request.Version > CfsBrokerProtocol.CurrentVersion)
+            return Error(CfsBrokerErrorCodes.ProtocolUnsupported, $"Broker protocol version {request.Version} is not supported.", request);
+
+        if (request.Version >= 2 && string.IsNullOrWhiteSpace(request.RequestId))
+            return Error(CfsBrokerErrorCodes.InvalidRequest, "Protocol v2 requests require a request ID.", request);
 
         switch (request.Command?.Trim().ToLowerInvariant())
         {
@@ -54,14 +57,14 @@ public sealed class CfsBrokerRequestHandler
                     var result = await _sessions.OpenAsync(identity, cancellationToken).ConfigureAwait(false);
                     _explorer.OpenFolder(result.MountPath);
                     CfsDiagnostics.Logger.WritePathEvent("broker.open", identity.FullPath, "success");
-                    return Success("Archive session is ready.", result.CanonicalArchiveKey, result.MountPath);
+                    return Success("Archive session is ready.", result.CanonicalArchiveKey, result.MountPath, request: request);
                 }
-                catch (BrokerRequestException ex) { return Error(ex.ErrorCode, ex.Message); }
+                catch (BrokerRequestException ex) { return Error(ex.ErrorCode, ex.Message, request); }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
                     CfsDiagnostics.Logger.WriteException("broker.open", ex);
-                    return Error("open-failed", "CFS could not open the archive on demand. Check ProjFS availability and the CFS diagnostic log.");
+                    return Error("open-failed", "CFS could not open the archive on demand. Check ProjFS availability and the CFS diagnostic log.", request);
                 }
             case "status":
             case "query":
@@ -70,31 +73,31 @@ public sealed class CfsBrokerRequestHandler
                     string? key = null;
                     if (!string.IsNullOrWhiteSpace(request.ArchivePath)) key = CfsArchiveIdentity.Create(request.ArchivePath).Key;
                     var persistence = await _sessions.GetPersistenceStatusAsync(key).ConfigureAwait(false);
-                    return Success("Broker is running.", persistence: persistence);
+                    return Success("Broker is running.", persistence: persistence, request: request);
                 }
-                catch (BrokerRequestException ex) { return Error(ex.ErrorCode, ex.Message); }
+                catch (BrokerRequestException ex) { return Error(ex.ErrorCode, ex.Message, request); }
             case "close":
                 try
                 {
                     var identity = CfsArchiveIdentity.Create(request.ArchivePath ?? string.Empty);
                     var result = await _sessions.CloseAsync(identity, cancellationToken).ConfigureAwait(false);
-                    if (!result.Found) return Error("close-no-session", result.Error!);
-                    if (!result.Success) return Error("close-failed", result.Error!, result.Status, result.MountPath);
+                    if (!result.Found) return Error(CfsBrokerErrorCodes.SessionNotFound, result.Error!, request);
+                    if (!result.Success) return Error("close-failed", result.Error!, request: request, persistence: result.Status, mountPath: result.MountPath);
                     return Success("Close CFS completed. Pending edits were committed, the archive validated, and the mounted folder was removed.",
-                        identity.Key, result.MountPath, persistence: result.Status);
+                        identity.Key, result.MountPath, persistence: result.Status, request: request);
                 }
-                catch (BrokerRequestException ex) { return Error(ex.ErrorCode, ex.Message); }
+                catch (BrokerRequestException ex) { return Error(ex.ErrorCode, ex.Message, request); }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             case "create-empty":
                 try
                 {
                     if (_creationOperations is null) return Error("operation-unavailable", "Archive creation is not configured in this broker host.");
                     var output = _creationOperations.CreateEmpty(request.TargetPath ?? string.Empty);
-                    return Success("Empty CFS archive created.", outputPath: output);
+                    return Success("Empty CFS archive created.", outputPath: output, request: request);
                 }
                 catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or CfsArchiveException)
                 {
-                    return Error("create-empty-failed", ex.Message);
+                    return Error("create-empty-failed", ex.Message, request);
                 }
             case "compress":
                 try
@@ -102,40 +105,44 @@ public sealed class CfsBrokerRequestHandler
                     if (_creationOperations is null) return Error("operation-unavailable", "Folder compression is not configured in this broker host.");
                     var result = await _creationOperations.CompressFolderAsync(request.SourcePath ?? string.Empty, cancellationToken).ConfigureAwait(false);
                     return Success(result.Warning is null ? "Folder compressed to CFS." : "Folder compressed to CFS with a cleanup warning.",
-                        outputPath: result.OutputPath, warning: result.Warning);
+                        outputPath: result.OutputPath, warning: result.Warning, request: request);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or CfsArchiveException)
                 {
-                    return Error("compress-failed", ex.Message);
+                    return Error("compress-failed", ex.Message, request);
                 }
             case "shutdown":
                 if (!_allowControlledShutdown)
-                    return Error("shutdown-not-allowed", "Broker shutdown is available only to controlled test teardown.");
+                    return Error("shutdown-not-allowed", "Broker shutdown is available only to controlled test teardown.", request);
                 var flush = await _sessions.FlushAllAsync(cancellationToken).ConfigureAwait(false);
                 if (!flush.Success)
-                    return Error("commit-failed", flush.Error!, flush.Status, flush.MountPath);
-                var response = Success("Controlled broker shutdown accepted.", persistence: flush.Status);
+                    return Error(CfsBrokerErrorCodes.CommitFailed, flush.Error!, request: request, persistence: flush.Status, mountPath: flush.MountPath);
+                var response = Success("Controlled broker shutdown accepted.", persistence: flush.Status, request: request);
                 _requestShutdown();
                 return response;
             default:
-                return Error("unknown-command", "Unknown broker command. Supported commands are open, close, create-empty, compress, status, and controlled test shutdown.");
+                return Error(CfsBrokerErrorCodes.InvalidRequest, "Unknown broker command. Supported commands are open, close, create-empty, compress, status, query, and controlled test shutdown.", request);
         }
     }
 
-    private BrokerResponse Success(string message, string? key = null, string? mountPath = null, string? outputPath = null, string? warning = null, CfsPersistenceStatus? persistence = null) =>
+    private BrokerResponse Success(string message, string? key = null, string? mountPath = null, string? outputPath = null, string? warning = null, CfsPersistenceStatus? persistence = null, BrokerRequest? request = null) =>
         new(CfsBrokerProtocol.CurrentVersion, true, Message: message, CanonicalArchiveKey: key, MountPath: mountPath, OutputPath: outputPath, Warning: warning,
             PersistenceState: persistence?.State.ToString(), IsDirty: persistence?.IsDirty ?? false,
             DirtyGeneration: persistence?.DirtyGeneration ?? 0, CommittedGeneration: persistence?.CommittedGeneration ?? 0,
             LastCommitUtc: persistence?.LastCommitUtc, LastCommitError: persistence?.LastError,
-            SessionCount: _sessions.SessionCount, CreatedSessionCount: _sessions.CreatedSessionCount, BrokerProcessId: Environment.ProcessId);
+            SessionCount: _sessions.SessionCount, CreatedSessionCount: _sessions.CreatedSessionCount, BrokerProcessId: Environment.ProcessId,
+            RequestId: request?.RequestId, SessionId: request?.SessionId, OperationId: request?.OperationId,
+            CancellationId: request?.CancellationId, ProtocolCapabilities: "v2;request-id;session-id;expected-generation;cancellation-id;operation-status-polling");
 
-    private BrokerResponse Error(string code, string message, CfsPersistenceStatus? persistence = null, string? mountPath = null) =>
+    private BrokerResponse Error(string code, string message, BrokerRequest? request = null, CfsPersistenceStatus? persistence = null, string? mountPath = null) =>
         new(CfsBrokerProtocol.CurrentVersion, false, code, message, MountPath: mountPath,
             PersistenceState: persistence?.State.ToString(), IsDirty: persistence?.IsDirty ?? false,
             DirtyGeneration: persistence?.DirtyGeneration ?? 0, CommittedGeneration: persistence?.CommittedGeneration ?? 0,
             LastCommitUtc: persistence?.LastCommitUtc, LastCommitError: persistence?.LastError, SessionCount: _sessions.SessionCount,
-            CreatedSessionCount: _sessions.CreatedSessionCount, BrokerProcessId: Environment.ProcessId);
+            CreatedSessionCount: _sessions.CreatedSessionCount, BrokerProcessId: Environment.ProcessId,
+            RequestId: request?.RequestId, SessionId: request?.SessionId, OperationId: request?.OperationId,
+            CancellationId: request?.CancellationId);
 }
 
 public sealed record CfsBrokerNames(string MutexName, string PipeName)
@@ -145,9 +152,10 @@ public sealed record CfsBrokerNames(string MutexName, string PipeName)
         var userIdentity = OperatingSystem.IsWindows()
             ? WindowsIdentity.GetCurrent().User?.Value ?? Environment.UserName
             : Environment.UserName;
+        var sessionId = Process.GetCurrentProcess().SessionId;
         var suffix = string.IsNullOrWhiteSpace(instanceSuffix) ? string.Empty : ":" + instanceSuffix.Trim();
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(userIdentity + suffix))).ToLowerInvariant()[..24];
-        return new($"Global\\CFS.Broker.v1.{hash}", $"CFS.Broker.v1.{hash}");
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{userIdentity}:{sessionId}{suffix}"))).ToLowerInvariant()[..24];
+        return new($"Global\\CFS.Broker.v2.{hash}", $"CFS.Broker.v2.{hash}");
     }
 }
 

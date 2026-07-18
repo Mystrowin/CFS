@@ -1,9 +1,19 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
 namespace Cfs.Broker;
 
-public sealed record CfsArchiveIdentity(string FullPath, string Key, string MountKey)
+public sealed record CfsArchiveIdentity(
+    string FullPath,
+    string Key,
+    string MountKey,
+    uint? VolumeSerialNumber,
+    ulong? FileId,
+    long FileSize,
+    DateTimeOffset LastWriteTimeUtc,
+    string HeaderFingerprint)
 {
     public static CfsArchiveIdentity Create(string path, string? baseDirectory = null)
     {
@@ -33,11 +43,67 @@ public sealed record CfsArchiveIdentity(string FullPath, string Key, string Moun
         if (!File.Exists(fullPath))
             throw new BrokerRequestException("archive-not-found", "The requested .cfs archive does not exist or is not accessible.");
 
-        // The comparer is OrdinalIgnoreCase; upper-casing only supplies stable hash input.
-        var key = fullPath;
+        var info = new FileInfo(fullPath);
+        var headerFingerprint = ReadHeaderFingerprint(fullPath);
+        var native = TryGetNativeIdentity(fullPath);
+        // Volume serial plus file ID survives path aliases and moves. The canonical-path
+        // fallback is paired with a bounded header fingerprint so a replacement at the
+        // same path cannot silently reuse a writable session.
+        var key = native is { } value
+            ? $"ntfs:{value.VolumeSerialNumber:x8}:{value.FileId:x16}"
+            : $"path:{fullPath.ToUpperInvariant()}:{headerFingerprint}";
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key.ToUpperInvariant()))).ToLowerInvariant();
-        return new CfsArchiveIdentity(fullPath, key, hash[..32]);
+        return new CfsArchiveIdentity(fullPath, key, hash[..32], native?.VolumeSerialNumber, native?.FileId,
+            info.Length, new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero), headerFingerprint);
     }
+
+    public bool RepresentsSameFile(CfsArchiveIdentity other) =>
+        other is not null && StringComparer.OrdinalIgnoreCase.Equals(Key, other.Key);
+
+    private static string ReadHeaderFingerprint(string path)
+    {
+        const int maximumHeaderBytes = 64 * 1024;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        var count = checked((int)Math.Min(stream.Length, maximumHeaderBytes));
+        var buffer = new byte[count];
+        stream.ReadExactly(buffer);
+        return Convert.ToHexString(SHA256.HashData(buffer));
+    }
+
+    private static NativeFileIdentity? TryGetNativeIdentity(string path)
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete, bufferSize: 4096, options: FileOptions.None);
+            if (!GetFileInformationByHandle(stream.SafeFileHandle, out var information)) return null;
+            return new NativeFileIdentity(information.VolumeSerialNumber,
+                ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or Win32Exception) { return null; }
+    }
+
+    private sealed record NativeFileIdentity(uint VolumeSerialNumber, ulong FileId);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, out ByHandleFileInformation information);
 }
 
 public sealed class BrokerRequestException : Exception

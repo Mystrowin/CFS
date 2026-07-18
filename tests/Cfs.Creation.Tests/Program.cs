@@ -270,15 +270,15 @@ static async Task CreationErrorsAreActionable()
     var create = await handler.HandleAsync(new BrokerRequest(1, "create-empty", TargetPath: wrong));
     Assert(!create.Success && create.ErrorCode == "create-empty-failed", "invalid empty target lacked a bounded error");
     var unknown = await handler.HandleAsync(new BrokerRequest(1, "erase"));
-    Assert(unknown.ErrorCode == "unknown-command" && unknown.Message!.Contains("create-empty") && unknown.Message.Contains("compress"), "supported command message is stale");
+    Assert(unknown.ErrorCode == CfsBrokerErrorCodes.InvalidRequest && unknown.Message!.Contains("create-empty") && unknown.Message.Contains("compress"), "supported command message is stale");
 }
 
 static Task ShellRegistrationIsExactAndSafe()
 {
     if (!OperatingSystem.IsWindows()) return Task.CompletedTask;
     using var workspace = new TestWorkspace(); var root = FindRepositoryRoot();
-    var built = Path.Combine(root, "src", "Cfs.Broker", "bin", "Release", "net8.0-windows", "Cfs.Broker.exe");
-    var broker = Path.Combine(workspace.Root, "Program Files", "CFS Beta", "Cfs.Broker.exe"); Directory.CreateDirectory(Path.GetDirectoryName(broker)!); File.Copy(built, broker);
+    var built = Path.Combine(root, "src", "Cfs.CommandClient", "bin", "Release", "net8.0-windows", "Cfs.CommandClient.exe");
+    var broker = Path.Combine(workspace.Root, "Program Files", "CFS Beta", "Cfs.CommandClient.exe"); Directory.CreateDirectory(Path.GetDirectoryName(broker)!); File.Copy(built, broker);
     var template = Path.Combine(workspace.Root, "ShellNew", "CFS-Empty.cfs"); Directory.CreateDirectory(Path.GetDirectoryName(template)!); CfsArchive.CreateEmpty(template);
     var basePath = $"Software\\CFS-Creation-Tests\\{Guid.NewGuid():N}\\Classes";
     var allOwnedBase = $"Software\\CFS-Creation-Tests\\{Guid.NewGuid():N}\\Classes";
@@ -303,7 +303,7 @@ static Task ShellRegistrationIsExactAndSafe()
         Assert(Registry.CurrentUser.OpenSubKey(basePath + @"\Directory\shell\CFS.Compress") is null, "unregister retained owned folder verb keys");
 
         // A tree containing only exact CFS-owned values must prune completely.
-        var broker2 = Path.Combine(workspace.Root, "second", "Cfs.Broker.exe"); Directory.CreateDirectory(Path.GetDirectoryName(broker2)!); File.Copy(built, broker2);
+        var broker2 = Path.Combine(workspace.Root, "second", "Cfs.CommandClient.exe"); Directory.CreateDirectory(Path.GetDirectoryName(broker2)!); File.Copy(built, broker2);
         var template2 = Path.Combine(workspace.Root, "second", "ShellNew", "CFS-Empty.cfs"); Directory.CreateDirectory(Path.GetDirectoryName(template2)!); CfsArchive.CreateEmpty(template2);
         Assert(RunScript(root, broker2, template2, allOwnedBase, false, false).ExitCode == 0, "all-owned isolated registration failed");
         Assert(RunScript(root, broker2, template2, allOwnedBase, false, true).ExitCode == 0, "all-owned isolated unregister failed");
@@ -326,7 +326,7 @@ static Task ShellRegistrationIsExactAndSafe()
         var staged = RunDeveloperStage(root, stagePath);
         Assert(staged.ExitCode == 0 && staged.Output.Contains("DEVELOPER_STAGE_SHELLNEW_VALID=True"), "developer staging did not verify ShellNew output: " + staged.Output + staged.Error);
         var stagedTemplate = Path.Combine(stagePath, "ShellNew", "CFS-Empty.cfs");
-        Assert(File.Exists(Path.Combine(stagePath, "Cfs.App.exe")) && File.Exists(Path.Combine(stagePath, "Cfs.Broker.exe")), "developer stage lacks App or Broker");
+        Assert(File.Exists(Path.Combine(stagePath, "Cfs.App.exe")) && File.Exists(Path.Combine(stagePath, "Cfs.Broker.exe")) && File.Exists(Path.Combine(stagePath, "Cfs.CommandClient.exe")), "developer stage lacks App, Broker, or CommandClient");
         Assert(File.Exists(stagedTemplate) && CfsArchive.Validate(stagedTemplate).IsValid && CfsArchive.Load(stagedTemplate).ListEntries().Count == 0,
             "staged ShellNew template is not valid empty CFS1/v1");
         var stagedBytes = File.ReadAllBytes(stagedTemplate);

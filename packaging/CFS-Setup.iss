@@ -7,11 +7,12 @@
 #endif
 
 #define ProductName "CFS"
-#define ProductVersion "0.2.0"
+#define ProductVersion "0.3.0"
 #define ProductLabel "Beta"
 #define Publisher "Neeraj Pragnya Krishna Vasagiri"
-#define ProductExe "Cfs.App.exe"
+#define ProductExe "Cfs.CommandClient.exe"
 #define BrokerExe "Cfs.Broker.exe"
+#define CommandClientExe "Cfs.CommandClient.exe"
 
 [Setup]
 AppId={{8A9237D3-6476-4F69-AE72-58221802FA45}
@@ -49,24 +50,20 @@ Name: "enableprojfs"; Description: "Enable the Windows Projected File System fea
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-[Icons]
-Name: "{group}\CFS"; Filename: "{app}\{#ProductExe}"
-Name: "{autodesktop}\CFS"; Filename: "{app}\{#ProductExe}"; Tasks: desktopicon
-
 ; These keys deliberately survive the automatic uninstall pass. The [Code]
 ; section removes them only if they still point at this CFS installation.
 [Registry]
-Root: HKLM; Subkey: "Software\Classes\.cfs"; ValueType: string; ValueName: ""; ValueData: "CFS.Archive"
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive"; ValueType: string; ValueName: ""; ValueData: "CFS Compressed Folder"
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#ProductExe},0"
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#BrokerExe}"" open ""%1"""
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close"; ValueType: string; ValueName: ""; ValueData: "Close CFS"
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#BrokerExe},0"
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#BrokerExe}"" close ""%1"""
-Root: HKLM; Subkey: "Software\Classes\.cfs\ShellNew"; ValueType: string; ValueName: "FileName"; ValueData: "{app}\ShellNew\CFS-Empty.cfs"
-Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress"; ValueType: string; ValueName: ""; ValueData: "Compress to CFS"
-Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#BrokerExe},0"
-Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#BrokerExe}"" compress ""%1"""
+Root: HKLM; Subkey: "Software\Classes\.cfs"; ValueType: string; ValueName: ""; ValueData: "CFS.Archive"; Flags: uninsneveruninstall
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive"; ValueType: string; ValueName: ""; ValueData: "CFS Compressed Folder"; Flags: uninsneveruninstall
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#ProductExe},0"; Flags: uninsneveruninstall
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" open ""%1"""; Flags: uninsneveruninstall
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close"; ValueType: string; ValueName: ""; ValueData: "Close CFS"; Flags: uninsneveruninstall
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#BrokerExe},0"; Flags: uninsneveruninstall
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" close ""%1"""; Flags: uninsneveruninstall
+Root: HKLM; Subkey: "Software\Classes\.cfs\ShellNew"; ValueType: string; ValueName: "FileName"; ValueData: "{app}\ShellNew\CFS-Empty.cfs"; Flags: uninsneveruninstall
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress"; ValueType: string; ValueName: ""; ValueData: "Compress to CFS"; Flags: uninsneveruninstall
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#BrokerExe},0"; Flags: uninsneveruninstall
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" compress ""%1"""; Flags: uninsneveruninstall
 
 [Code]
 var
@@ -287,9 +284,9 @@ begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
 
-  InstalledCommand := '"' + ExpandConstant('{app}\{#BrokerExe}') + '" open "%1"';
-  InstalledCompressCommand := '"' + ExpandConstant('{app}\{#BrokerExe}') + '" compress "%1"';
-  InstalledCloseCommand := '"' + ExpandConstant('{app}\{#BrokerExe}') + '" close "%1"';
+  InstalledCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" open "%1"';
+  InstalledCompressCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" compress "%1"';
+  InstalledCloseCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" close "%1"';
   InstalledTemplate := ExpandConstant('{app}\ShellNew\CFS-Empty.cfs');
   if RegQueryStringValue(HKLM, 'Software\Classes\.cfs', '', ExtensionOwner) and
      (CompareText(ExtensionOwner, 'CFS.Archive') = 0) then

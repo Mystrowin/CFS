@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <CfsVersion>0.2.0</CfsVersion>
+    <CfsVersion>0.3.0</CfsVersion>
     <CfsReleaseLabel>Beta</CfsReleaseLabel>
     <Version>$(CfsVersion)-beta</Version>
     <AssemblyVersion>$(CfsVersion).0</AssemblyVersion>

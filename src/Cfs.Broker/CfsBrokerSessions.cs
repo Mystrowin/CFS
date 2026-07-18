@@ -183,15 +183,17 @@ internal sealed class CfsBrokerMountedSession : ICfsBrokerSession, ICfsPersisten
     private readonly Func<CancellationToken, Task> _commitOperation;
     private readonly CfsSessionTransaction? _transaction;
     private readonly SemaphoreSlim _closeGate = new(1, 1);
+    private CfsArchiveIdentity? _authoritativeIdentity;
     private bool _disposed;
 
     public CfsBrokerMountedSession(string archivePath, CfsMountSession session, TimeSpan? quietPeriod = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null, Func<CancellationToken, Task>? commit = null,
-        CfsSessionTransaction? transaction = null)
+        CfsSessionTransaction? transaction = null, CfsArchiveIdentity? authoritativeIdentity = null)
     {
         _archivePath = Path.GetFullPath(archivePath);
         _session = session;
         _transaction = transaction;
+        _authoritativeIdentity = authoritativeIdentity;
         _commitOperation = commit ?? CommitCoreAsync;
         _persistence = new CfsAutomaticPersistence(CommitWithTransactionAsync, quietPeriod ?? TimeSpan.FromMilliseconds(750), delay);
         _session.ContentChanged += OnContentChanged;
@@ -218,11 +220,22 @@ internal sealed class CfsBrokerMountedSession : ICfsBrokerSession, ICfsPersisten
     private async Task CommitWithTransactionAsync(CancellationToken cancellationToken)
     {
         var generation = _persistence.Status.DirtyGeneration;
+        EnsureAuthoritativeIdentity();
         _transaction?.MarkCommitPending(generation);
         await _commitOperation(cancellationToken).ConfigureAwait(false);
         if (!CfsArchive.Validate(_archivePath, cancellationToken: cancellationToken).IsValid)
             throw new CfsArchiveException("The automatic commit did not produce a valid CFS archive.");
+        _authoritativeIdentity = CfsArchiveIdentity.Create(_archivePath);
         _transaction?.MarkCommitted(generation);
+    }
+
+    private void EnsureAuthoritativeIdentity()
+    {
+        if (_authoritativeIdentity is null) return;
+        var current = CfsArchiveIdentity.Create(_archivePath);
+        if (!_authoritativeIdentity.RepresentsSameFile(current))
+            throw new BrokerRequestException(CfsBrokerErrorCodes.ExternalModification,
+                "The archive was replaced outside CFS while this writable session was active. Pending edits were preserved and were not committed.");
     }
 
     public Task FlushAsync(CancellationToken cancellationToken = default) => _persistence.FlushAsync(cancellationToken);

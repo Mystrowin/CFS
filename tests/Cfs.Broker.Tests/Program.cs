@@ -16,7 +16,7 @@ var tests = new (string Name, Func<Task> Body)[]
     ("IPC client deadline bounds connected response waits", IpcClientDeadlineBoundsResponseWait),
     ("handler timeout is bounded and server accepts the next request", HandlerTimeoutRecovers),
     ("concurrent registry opens create exactly one session and mount path", ConcurrentRegistryOpenCreatesOneSession),
-    ("shell commands quote broker paths and reject App CLI and injection", ShellCommandsAreBrokerOnlyAndQuoted),
+    ("shell commands use the command client and reject broker App CLI and injection", ShellCommandsUseCommandClientAndAreQuoted),
     ("path-based broker mount is manifest-only and archive-nonmutating", BrokerMountIsManifestOnlyAndNonMutating),
     ("cross-process broker reuses one provider and controlled shutdown cleans", CrossProcessBrokerReusesAndCleans),
     ("controlled shutdown without a broker exits promptly", OwnerlessControlledShutdownExitsPromptly),
@@ -58,6 +58,15 @@ static Task CanonicalArchiveIdentityConvergesAndRejects()
     Assert(StringComparer.OrdinalIgnoreCase.Equals(absolute.Key, differentCase.Key), "case variants diverged");
     Assert(StringComparer.OrdinalIgnoreCase.Equals(absolute.Key, trailing.Key), "trailing separator was not normalized");
     Assert(absolute.MountKey.Length == 32, "mount hash is not collision-resistant length");
+    Assert(!string.IsNullOrWhiteSpace(absolute.HeaderFingerprint) && absolute.HeaderFingerprint.Length == 64, "archive header fingerprint is missing");
+    if (absolute.FileId is not null)
+    {
+        var candidate = Path.Combine(workspace.Root, "replacement.cfs");
+        File.WriteAllBytes(candidate, [9, 8, 7]);
+        File.Replace(candidate, archivePath, null);
+        var replacement = CfsArchiveIdentity.Create(archivePath);
+        Assert(!absolute.RepresentsSameFile(replacement), "external replacement reused the previous filesystem identity");
+    }
     Assert(CfsArchiveIdentity.Create(leadingSpacePath).FullPath == Path.GetFullPath(leadingSpacePath), "legal leading-space archive name was mutated");
 
     var wrongExtension = Path.Combine(workspace.Root, "archive.zip");
@@ -85,9 +94,9 @@ static async Task IpcProtocolRejectsInvalidRequests()
     await using var registry = CreateFakeRegistry(Path.Combine(workspace.Root, "mounts"));
     var handler = new CfsBrokerRequestHandler(registry, new NoOpExplorer(), false, () => { });
     var version = await handler.HandleAsync(new BrokerRequest(999, "status"));
-    Assert(!version.Success && version.ErrorCode == "unsupported-version", "unknown protocol version lacked a clear response");
+    Assert(!version.Success && version.ErrorCode == CfsBrokerErrorCodes.ProtocolUnsupported, "unknown protocol version lacked a clear response");
     var command = await handler.HandleAsync(new BrokerRequest(1, "format-disk"));
-    Assert(!command.Success && command.ErrorCode == "unknown-command", "unknown command lacked a clear response");
+    Assert(!command.Success && command.ErrorCode == CfsBrokerErrorCodes.InvalidRequest, "unknown command lacked a clear response");
     var shutdown = await handler.HandleAsync(new BrokerRequest(1, "shutdown"));
     Assert(!shutdown.Success && shutdown.ErrorCode == "shutdown-not-allowed", "production handler accepted test shutdown");
 }
@@ -189,40 +198,41 @@ static async Task ConcurrentRegistryOpenCreatesOneSession()
     Assert(opens.Select(open => open.MountPath).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1, "concurrent opens returned different mount paths");
 }
 
-static Task ShellCommandsAreBrokerOnlyAndQuoted()
+static Task ShellCommandsUseCommandClientAndAreQuoted()
 {
     using var workspace = new TestWorkspace();
-    var broker = Path.Combine(Path.GetPathRoot(Environment.SystemDirectory)!, "Program Files", "CFS & Tools; Beta", "Cfs.Broker.exe");
+    var broker = Path.Combine(Path.GetPathRoot(Environment.SystemDirectory)!, "Program Files", "CFS & Tools; Beta", "Cfs.CommandClient.exe");
     var command = CfsShellRegistration.BuildOpenCommand(broker);
-    Assert(command == $"\"{Path.GetFullPath(broker)}\" open \"%1\"", "broker shell command quoting changed");
-    Assert(command.Count(ch => ch == '"') == 4 && command.Contains(" open ", StringComparison.Ordinal), "command is not one quoted broker invocation");
-    AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.Broker.exe", "Cfs.App.exe")), _ => true);
-    AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.Broker.exe", "Cfs.Cli.exe")), _ => true);
-    AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.Broker.exe", "bad\"name.exe")), _ => true);
+    Assert(command == $"\"{Path.GetFullPath(broker)}\" open \"%1\"", "command-client shell command quoting changed");
+    Assert(command.Count(ch => ch == '"') == 4 && command.Contains(" open ", StringComparison.Ordinal), "command is not one quoted command-client invocation");
+    AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.CommandClient.exe", "Cfs.Broker.exe")), _ => true);
+    AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.CommandClient.exe", "Cfs.App.exe")), _ => true);
+    AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.CommandClient.exe", "Cfs.Cli.exe")), _ => true);
+    AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.CommandClient.exe", "bad\"name.exe")), _ => true);
 
     var root = FindRepositoryRoot();
     var builtBroker = Path.Combine(root, "src", "Cfs.Broker", "bin", "Release", "net8.0-windows", "Cfs.Broker.exe");
-    var dryRunBroker = Path.Combine(workspace.Root, "CFS & Tools", "Cfs.Broker.exe");
+    var dryRunBroker = Path.Combine(workspace.Root, "CFS & Tools", "Cfs.CommandClient.exe");
     Directory.CreateDirectory(Path.GetDirectoryName(dryRunBroker)!); File.Copy(builtBroker, dryRunBroker);
     var template = Path.Combine(workspace.Root, "ShellNew", "CFS-Empty.cfs");
     Directory.CreateDirectory(Path.GetDirectoryName(template)!); CfsArchive.CreateEmpty(template);
     var dryRun = RunAssociationScript(root, dryRunBroker, template);
     Assert(dryRun.ExitCode == 0 && dryRun.Output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
         .Contains("OPEN_COMMAND=" + CfsShellRegistration.BuildOpenCommand(dryRunBroker)), "association dry-run did not emit the exact quoted broker open command");
-    foreach (var forbidden in new[] { "Cfs.App.exe", "Cfs.Cli.exe" })
+    foreach (var forbidden in new[] { "Cfs.Broker.exe", "Cfs.App.exe", "Cfs.Cli.exe" })
     {
         var forbiddenPath = Path.Combine(workspace.Root, forbidden); File.Copy(builtBroker, forbiddenPath);
         var rejected = RunAssociationScript(root, forbiddenPath, template);
-        Assert(rejected.ExitCode != 0 && rejected.Error.Contains("Expected Cfs.Broker.exe", StringComparison.Ordinal), $"association script accepted {forbidden}");
+        Assert(rejected.ExitCode != 0 && rejected.Error.Contains("Expected Cfs.CommandClient.exe", StringComparison.Ordinal), $"association script accepted {forbidden}");
     }
 
     var mainForm = File.ReadAllText(Path.Combine(root, "src", "Cfs.App", "MainForm.cs"));
-    Assert(mainForm.Contains("Path.Combine(AppContext.BaseDirectory, CfsShellRegistration.BrokerExecutableName)", StringComparison.Ordinal)
-        && mainForm.Contains("CfsShellRegistration.BuildOpenCommand(brokerPath)", StringComparison.Ordinal), "MainForm does not build the exact sibling broker command");
+    Assert(mainForm.Contains("Path.Combine(AppContext.BaseDirectory, CfsShellRegistration.CommandClientExecutableName)", StringComparison.Ordinal)
+        && mainForm.Contains("CfsShellRegistration.BuildOpenCommand(brokerPath)", StringComparison.Ordinal), "MainForm does not build the exact sibling command-client command");
     var installer = File.ReadAllText(Path.Combine(root, "packaging", "CFS-Setup.iss"));
-    Assert(installer.Contains("ValueData: \"\"\"{app}\\{#BrokerExe}\"\" open \"\"%1\"\"\"", StringComparison.Ordinal), "installer open command is not exact broker open quoting");
-    Assert(installer.Contains("InstalledCommand := '\"' + ExpandConstant('{app}\\{#BrokerExe}') + '\" open \"%1\"';", StringComparison.Ordinal), "installer uninstall ownership check is not the same exact broker command");
-    Assert(!mainForm.Contains("Cfs.App.exe\" \"%1", StringComparison.OrdinalIgnoreCase) && !installer.Contains("Cfs.App.exe\" \"%1", StringComparison.OrdinalIgnoreCase), "a first-party registration path still assigns open to Cfs.App");
+    Assert(installer.Contains("ValueData: \"\"\"{app}\\{#CommandClientExe}\"\" open \"\"%1\"\"\"", StringComparison.Ordinal), "installer open command is not exact command-client quoting");
+    Assert(installer.Contains("InstalledCommand := '\"' + ExpandConstant('{app}\\{#CommandClientExe}') + '\" open \"%1\"';", StringComparison.Ordinal), "installer uninstall ownership check is not the same exact command-client command");
+    Assert(!mainForm.Contains("Cfs.Broker.exe\" \"%1", StringComparison.OrdinalIgnoreCase) && !installer.Contains("Cfs.Broker.exe\" \"%1", StringComparison.OrdinalIgnoreCase), "a first-party registration path still assigns open to Cfs.Broker");
     return Task.CompletedTask;
 }
 
@@ -232,7 +242,7 @@ static (int ExitCode, string Output, string Error) RunAssociationScript(string r
     {
         UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
     };
-    foreach (var argument in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(root, "tools", "Register-CfsFileAssociation.ps1"), "-BrokerPath", handlerPath, "-EmptyTemplatePath", templatePath, "-DryRun" })
+    foreach (var argument in new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Path.Combine(root, "tools", "Register-CfsFileAssociation.ps1"), "-CommandClientPath", handlerPath, "-EmptyTemplatePath", templatePath, "-DryRun" })
         info.ArgumentList.Add(argument);
     using var process = Process.Start(info) ?? throw new InvalidOperationException("Could not run association dry-run.");
     var output = process.StandardOutput.ReadToEnd(); var error = process.StandardError.ReadToEnd(); process.WaitForExit();

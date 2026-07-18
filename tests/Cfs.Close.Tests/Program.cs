@@ -53,7 +53,7 @@ static async Task HandlerCloseNoSessionIsSafe()
     await using var registry = new CfsBrokerSessionRegistry(Path.Combine(workspace.Root, "mounts"), (_, mount, _) => Task.FromResult<ICfsBrokerSession>(new ControlledSession(mount, false)));
     var shutdownRequested = false; var handler = new CfsBrokerRequestHandler(registry, new NoOpExplorer(), true, () => shutdownRequested = true);
     var response = await handler.HandleAsync(new BrokerRequest(1, "close", archive));
-    Assert(!response.Success && response.ErrorCode == "close-no-session" && !shutdownRequested && response.SessionCount == 0, "user close became global shutdown or false success");
+    Assert(!response.Success && response.ErrorCode == CfsBrokerErrorCodes.SessionNotFound && !shutdownRequested && response.SessionCount == 0, "user close became global shutdown or false success");
 }
 
 static async Task RealBrokerClosesOnlyTargetSession()
@@ -163,7 +163,7 @@ static Task CloseShellRegistrationIsExactAndSafe()
     if (!OperatingSystem.IsWindows()) return Task.CompletedTask;
     using var workspace = new Workspace();
     var brokerDirectory = Path.Combine(workspace.Root, "handler with spaces"); Directory.CreateDirectory(brokerDirectory);
-    var brokerPath = Path.Combine(brokerDirectory, CfsShellRegistration.BrokerExecutableName); File.WriteAllBytes(brokerPath, []);
+    var brokerPath = Path.Combine(brokerDirectory, CfsShellRegistration.CommandClientExecutableName); File.WriteAllBytes(brokerPath, []);
     var templatePath = Path.Combine(workspace.Root, "empty template.cfs"); CfsArchive.CreateEmpty(templatePath);
     var expected = CfsShellRegistration.BuildCloseCommand(brokerPath);
     Assert(expected == $"\"{Path.GetFullPath(brokerPath)}\" close \"%1\"", "close command quoting is not exact");

@@ -1,6 +1,6 @@
 param(
-    [Alias('AppPath')]
-    [string]$BrokerPath,
+    [Alias('AppPath', 'BrokerPath')]
+    [string]$CommandClientPath,
     [string]$EmptyTemplatePath,
     [string]$RegistryBasePath = 'Software\Classes',
     [switch]$Unregister,
@@ -19,18 +19,18 @@ function Remove-EmptyKey([string]$keyPath) {
     if ($empty) { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($keyPath, $false) }
 }
 
-if ([string]::IsNullOrWhiteSpace($BrokerPath)) {
-    $packaged = Join-Path $PSScriptRoot 'Cfs.Broker.exe'
-    $developer = Join-Path $repoRoot 'src\Cfs.Broker\bin\Debug\net8.0-windows\Cfs.Broker.exe'
-    if ($Unregister) { $BrokerPath = $packaged }
-    elseif (Test-Path -LiteralPath $packaged) { $BrokerPath = $packaged }
-    elseif (Test-Path -LiteralPath $developer) { $BrokerPath = $developer }
-    else { throw 'Pass -BrokerPath or build Cfs.Broker first.' }
+if ([string]::IsNullOrWhiteSpace($CommandClientPath)) {
+    $packaged = Join-Path $PSScriptRoot 'Cfs.CommandClient.exe'
+    $developer = Join-Path $repoRoot 'src\Cfs.CommandClient\bin\Debug\net8.0-windows\Cfs.CommandClient.exe'
+    if ($Unregister) { $CommandClientPath = $packaged }
+    elseif (Test-Path -LiteralPath $packaged) { $CommandClientPath = $packaged }
+    elseif (Test-Path -LiteralPath $developer) { $CommandClientPath = $developer }
+    else { throw 'Pass -CommandClientPath or build Cfs.CommandClient first.' }
 }
 
-$resolvedBrokerPath = if ($Unregister) { [IO.Path]::GetFullPath($BrokerPath) } else { (Resolve-Path -LiteralPath $BrokerPath).Path }
-if (-not [System.IO.Path]::GetFileName($resolvedBrokerPath).Equals('Cfs.Broker.exe', [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Expected Cfs.Broker.exe. Cfs.App and Cfs.Cli are not shell handlers.'
+$resolvedCommandClientPath = if ($Unregister) { [IO.Path]::GetFullPath($CommandClientPath) } else { (Resolve-Path -LiteralPath $CommandClientPath).Path }
+if (-not [System.IO.Path]::GetFileName($resolvedCommandClientPath).Equals('Cfs.CommandClient.exe', [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Expected Cfs.CommandClient.exe. Cfs.Broker, Cfs.App, and Cfs.Cli are not shell handlers.'
 }
 
 if ([string]::IsNullOrWhiteSpace($EmptyTemplatePath)) {
@@ -41,9 +41,9 @@ if (-not $Unregister -and -not (Test-Path -LiteralPath $resolvedTemplatePath)) {
     throw "The generated empty CFS template was not found at $resolvedTemplatePath."
 }
 
-$openCommand = '"' + $resolvedBrokerPath + '" open "%1"'
-$compressCommand = '"' + $resolvedBrokerPath + '" compress "%1"'
-$closeCommand = '"' + $resolvedBrokerPath + '" close "%1"'
+$openCommand = '"' + $resolvedCommandClientPath + '" open "%1"'
+$compressCommand = '"' + $resolvedCommandClientPath + '" compress "%1"'
+$closeCommand = '"' + $resolvedCommandClientPath + '" close "%1"'
 
 if ($DryRun) {
     Write-Output "OPEN_COMMAND=$openCommand"
@@ -78,7 +78,7 @@ if ($Unregister) {
     $closeVerbKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($closeVerbPath, $true)
     if ($null -ne $closeVerbKey) {
         if ([string]$closeVerbKey.GetValue($null) -eq 'Close CFS') { $closeVerbKey.DeleteValue('', $false) }
-        if ([string]$closeVerbKey.GetValue('Icon') -eq ($resolvedBrokerPath + ',0')) { $closeVerbKey.DeleteValue('Icon', $false) }
+        if ([string]$closeVerbKey.GetValue('Icon') -eq ($resolvedCommandClientPath + ',0')) { $closeVerbKey.DeleteValue('Icon', $false) }
         $closeVerbKey.Dispose()
     }
 
@@ -109,7 +109,7 @@ if ($Unregister) {
     $verbKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($verbPath, $true)
     if ($null -ne $verbKey) {
         if ([string]$verbKey.GetValue($null) -eq 'Compress to CFS') { $verbKey.DeleteValue('', $false) }
-        if ([string]$verbKey.GetValue('Icon') -eq ($resolvedBrokerPath + ',0')) { $verbKey.DeleteValue('Icon', $false) }
+        if ([string]$verbKey.GetValue('Icon') -eq ($resolvedCommandClientPath + ',0')) { $verbKey.DeleteValue('Icon', $false) }
         $verbKey.Dispose()
     }
 
@@ -136,11 +136,11 @@ $commandKey.SetValue($null, $openCommand); $commandKey.Dispose()
 $shellNewKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey '.cfs\ShellNew'))
 $shellNewKey.SetValue('FileName', $resolvedTemplatePath); $shellNewKey.Dispose()
 $verbKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'Directory\shell\CFS.Compress'))
-$verbKey.SetValue($null, 'Compress to CFS'); $verbKey.SetValue('Icon', $resolvedBrokerPath + ',0'); $verbKey.Dispose()
+$verbKey.SetValue($null, 'Compress to CFS'); $verbKey.SetValue('Icon', $resolvedCommandClientPath + ',0'); $verbKey.Dispose()
 $verbCommandKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'Directory\shell\CFS.Compress\command'))
 $verbCommandKey.SetValue($null, $compressCommand); $verbCommandKey.Dispose()
 $closeVerbKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'CFS.Archive\shell\CFS.Close'))
-$closeVerbKey.SetValue($null, 'Close CFS'); $closeVerbKey.SetValue('Icon', $resolvedBrokerPath + ',0'); $closeVerbKey.Dispose()
+$closeVerbKey.SetValue($null, 'Close CFS'); $closeVerbKey.SetValue('Icon', $resolvedCommandClientPath + ',0'); $closeVerbKey.Dispose()
 $closeCommandKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'CFS.Archive\shell\CFS.Close\command'))
 $closeCommandKey.SetValue($null, $closeCommand); $closeCommandKey.Dispose()
 Write-Host 'CFS shell open, ShellNew, Compress to CFS, and Close CFS entries were registered for the current user.'
