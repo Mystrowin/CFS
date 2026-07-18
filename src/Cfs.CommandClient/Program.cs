@@ -6,7 +6,11 @@ using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 
-return await CfsCommandClient.RunAsync(args);
+internal static class Program
+{
+    [STAThread]
+    private static int Main(string[] args) => CfsCommandClient.Run(args);
+}
 
 internal static class CfsCommandClient
 {
@@ -14,12 +18,113 @@ internal static class CfsCommandClient
     private const int MaximumPayloadBytes = 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public static async Task<int> RunAsync(string[] args)
+    public static int Run(string[] args)
     {
         try
         {
             var request = Parse(args);
             var pipeName = BrokerPipeName();
+            if (request.Command is "compress" or "extract")
+                return RunTrackedOperation(pipeName, request);
+            if (request.Command == "open-readonly")
+            {
+                var decision = MessageBox.Show(
+                    "Read-only compatibility mode fully extracts the archive to a controlled temporary workspace. Changes in that workspace are discarded on Close CFS and never replace the source archive. Continue?",
+                    "Open CFS read-only",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Information,
+                    MessageBoxDefaultButton.Button2);
+                if (decision != DialogResult.Yes) return 0;
+            }
+            if (request.Command == "close")
+                return RunCloseWorkflow(pipeName, request);
+            if (request.Command == "discard")
+            {
+                var decision = MessageBox.Show(
+                    "Discard all pending changes and unmount this CFS workspace? The last committed archive will be preserved.",
+                    "Discard pending CFS changes",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2);
+                if (decision != DialogResult.Yes) return 0;
+            }
+            if (request.Command == "discard-recovery")
+            {
+                var decision = MessageBox.Show(
+                    "Permanently discard the verified interrupted-session workspace? The valid original archive will not be changed.",
+                    "Discard CFS recovery data",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2);
+                if (decision != DialogResult.Yes) return 0;
+            }
+            if (request.Command is "status" or "query")
+                return RunStatusWorkflow(pipeName, request);
+            if (request.Command == "recovery-status")
+                return RunRecoveryStatusWorkflow(pipeName, request);
+            return RunAsync(pipeName, request).GetAwaiter().GetResult();
+        }
+        catch (CommandClientException ex)
+        {
+            ShowError(ex.Message);
+            return 2;
+        }
+        catch (Exception ex)
+        {
+            ShowError($"CFS command client failed: {ex.Message}");
+            return 2;
+        }
+    }
+
+    private static int RunCloseWorkflow(string pipeName, ClientRequest closeRequest)
+    {
+        var statusRequest = closeRequest with { Command = "status", RequestId = Guid.NewGuid().ToString("N") };
+        var status = SendOrStartAsync(pipeName, statusRequest).GetAwaiter().GetResult();
+        if (!status.Success) return 2;
+        if (status.IsDirty)
+        {
+            var choice = MessageBox.Show(
+                $"This CFS workspace has pending changes (generation {status.DirtyGeneration}, last committed {status.CommittedGeneration}).\n\nYes: commit and close\nNo: discard and close\nCancel: keep it mounted",
+                "Close CFS",
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button1);
+            if (choice == DialogResult.Cancel) return 0;
+            if (choice == DialogResult.No)
+                closeRequest = closeRequest with { Command = "discard", RequestId = Guid.NewGuid().ToString("N") };
+        }
+        return RunAsync(pipeName, closeRequest).GetAwaiter().GetResult();
+    }
+
+    private static int RunStatusWorkflow(string pipeName, ClientRequest request)
+    {
+        var response = SendOrStartAsync(pipeName, request).GetAwaiter().GetResult();
+        if (!response.Success) return 2;
+        var state = response.PersistenceState ?? "Clean";
+        var detail = response.IsDirty
+            ? $"Mutation sequence: {response.MutationSequence}\nPending generation: {response.DirtyGeneration}\nLast committed generation: {response.CommittedGeneration}"
+            : $"Mutation sequence: {response.MutationSequence}\nCommitted generation: {response.CommittedGeneration}\nNo pending changes.";
+        MessageBox.Show($"{state}\n\n{detail}", "CFS archive status", MessageBoxButtons.OK,
+            response.IsDirty ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+        return 0;
+    }
+
+    private static int RunRecoveryStatusWorkflow(string pipeName, ClientRequest request)
+    {
+        var response = SendOrStartAsync(pipeName, request).GetAwaiter().GetResult();
+        if (!response.Success) return 2;
+        MessageBox.Show(
+            $"State: {response.RecoveryState ?? "Unknown"}\nPhase: {response.RecoveryPhase ?? "Unknown"}\nMutation sequence: {response.RecoveryMutationSequence}\nPending generation: {response.RecoveryDirtyGeneration}\nLast committed generation: {response.RecoveryCommittedGeneration}\nOriginal archive valid: {(response.OriginalArchiveValid ? "Yes" : "No")}\n\n{response.Message}",
+            "CFS recovery status",
+            MessageBoxButtons.OK,
+            response.OriginalArchiveValid ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        return 0;
+    }
+
+    private static async Task<int> RunAsync(string pipeName, ClientRequest request)
+    {
+        try
+        {
             var response = await SendOrStartAsync(pipeName, request).ConfigureAwait(false);
             return response.Success ? 0 : 2;
         }
@@ -35,18 +140,50 @@ internal static class CfsCommandClient
         }
     }
 
+    private static int RunTrackedOperation(string pipeName, ClientRequest request)
+    {
+        EnsureBrokerAsync(pipeName).GetAwaiter().GetResult();
+        using var dialog = new CfsOperationProgressDialog(
+            request.Command == "compress" ? "Compressing to CFS" : "Extracting CFS archive",
+            () => SendAsync(pipeName, request, TimeSpan.FromHours(24), showFailure: false),
+            () => SendAsync(pipeName, new ClientRequest(ProtocolVersion, "operation-status", null, null, null,
+                Guid.NewGuid().ToString("N"), null, null, null, request.OperationId), TimeSpan.FromSeconds(10), showFailure: false),
+            () => SendAsync(pipeName, new ClientRequest(ProtocolVersion, "cancel", null, null, null,
+                Guid.NewGuid().ToString("N"), null, null, request.CancellationId, request.OperationId), TimeSpan.FromSeconds(10), showFailure: false));
+        ApplicationConfiguration.Initialize();
+        Application.Run(dialog);
+        var response = dialog.Result;
+        if (response is null) throw new CommandClientException("CFS operation ended without a broker result.");
+        if (!response.Success && response.ErrorCode != "CFS_E_CANCELLED")
+            ShowError(response.Message ?? response.ErrorCode ?? "CFS action failed.");
+        return response.Success ? 0 : 2;
+    }
+
     private static ClientRequest Parse(string[] args)
     {
-        if (args.Length is < 1 or > 2) throw new CommandClientException("CFS command arguments are invalid.");
+        if (args.Length is < 1 or > 3) throw new CommandClientException("CFS command arguments are invalid.");
         var command = args[0].Trim().ToLowerInvariant();
-        if (command is not ("open" or "close" or "create-empty" or "compress" or "status" or "query"))
+        if (command is not ("open" or "open-readonly" or "close" or "commit" or "discard" or "recover" or "recovery-status" or "discard-recovery" or "create-empty" or "compress" or "extract" or "status" or "query" or "operation-status" or "cancel"))
             throw new CommandClientException("CFS does not support this Explorer action.");
+        if (command == "operation-status")
+        {
+            if (args.Length != 2 || string.IsNullOrWhiteSpace(args[1])) throw new CommandClientException("CFS operation status requires one operation ID.");
+            return new(ProtocolVersion, command, null, null, null, Guid.NewGuid().ToString("N"), null, null, null, args[1]);
+        }
+        if (command == "cancel")
+        {
+            if (args.Length != 3 || string.IsNullOrWhiteSpace(args[1]) || string.IsNullOrWhiteSpace(args[2])) throw new CommandClientException("CFS cancellation requires an operation ID and cancellation ID.");
+            return new(ProtocolVersion, command, null, null, null, Guid.NewGuid().ToString("N"), null, null, args[2], args[1]);
+        }
+        if (args.Length > 2) throw new CommandClientException("CFS command arguments are invalid.");
         var path = args.Length == 2 ? ValidatePath(args[1], command) : null;
-        if (command is "open" or "close" or "create-empty" or "compress" && path is null)
+        if (command is "open" or "open-readonly" or "close" or "commit" or "discard" or "recover" or "recovery-status" or "discard-recovery" or "create-empty" or "compress" or "extract" && path is null)
             throw new CommandClientException($"CFS {command} requires one filesystem path.");
-        return new(ProtocolVersion, command, command is "open" or "close" or "status" or "query" ? path : null,
+        var operationId = command is "compress" or "extract" ? Guid.NewGuid().ToString("N") : null;
+        var cancellationId = command is "compress" or "extract" ? Guid.NewGuid().ToString("N") : null;
+        return new(ProtocolVersion, command, command is "open" or "open-readonly" or "close" or "commit" or "discard" or "recover" or "recovery-status" or "discard-recovery" or "extract" or "status" or "query" ? path : null,
             command == "compress" ? path : null, command == "create-empty" ? path : null,
-            Guid.NewGuid().ToString("N"), null, null, Guid.NewGuid().ToString("N"), null);
+            Guid.NewGuid().ToString("N"), null, null, cancellationId, operationId);
     }
 
     private static string ValidatePath(string path, string command)
@@ -56,8 +193,8 @@ internal static class CfsCommandClient
         var full = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         if (full.StartsWith(@"\\.\", StringComparison.Ordinal) || full.StartsWith(@"\\?\", StringComparison.Ordinal))
             throw new CommandClientException("CFS does not accept device or shell namespace paths.");
-        if (command is "open" or "close" && !full.EndsWith(".cfs", StringComparison.OrdinalIgnoreCase))
-            throw new CommandClientException("CFS open and close actions require a .cfs archive.");
+        if (command is "open" or "open-readonly" or "close" or "commit" or "discard" or "recover" or "recovery-status" or "discard-recovery" or "extract" && !full.EndsWith(".cfs", StringComparison.OrdinalIgnoreCase))
+            throw new CommandClientException("This CFS action requires a .cfs archive.");
         return full;
     }
 
@@ -71,6 +208,20 @@ internal static class CfsCommandClient
         }
     }
 
+    private static async Task EnsureBrokerAsync(string pipeName)
+    {
+        var status = new ClientRequest(ProtocolVersion, "status", null, null, null, Guid.NewGuid().ToString("N"), null, null, null, null);
+        try
+        {
+            await SendAsync(pipeName, status, TimeSpan.FromSeconds(2), showFailure: false).ConfigureAwait(false);
+        }
+        catch (CommandClientException)
+        {
+            StartBroker();
+            await SendAsync(pipeName, status with { RequestId = Guid.NewGuid().ToString("N") }, TimeSpan.FromSeconds(20), showFailure: false).ConfigureAwait(false);
+        }
+    }
+
     private static void StartBroker()
     {
         var brokerPath = Path.Combine(AppContext.BaseDirectory, "Cfs.Broker.exe");
@@ -79,7 +230,7 @@ internal static class CfsCommandClient
         if (process is null) throw new CommandClientException("CFS broker could not be started.");
     }
 
-    private static async Task<ClientResponse> SendAsync(string pipeName, ClientRequest request, TimeSpan timeout)
+    internal static async Task<ClientResponse> SendAsync(string pipeName, ClientRequest request, TimeSpan timeout, bool showFailure = true)
     {
         using var cancel = new CancellationTokenSource(timeout);
         Exception? last = null;
@@ -91,7 +242,7 @@ internal static class CfsCommandClient
                 await pipe.ConnectAsync(500, cancel.Token).ConfigureAwait(false);
                 await WriteAsync(pipe, request, cancel.Token).ConfigureAwait(false);
                 var response = await ReadAsync<ClientResponse>(pipe, cancel.Token).ConfigureAwait(false);
-                if (!response.Success) ShowError(response.Message ?? response.ErrorCode ?? "CFS action failed.");
+                if (!response.Success && showFailure) ShowError(response.Message ?? response.ErrorCode ?? "CFS action failed.");
                 return response;
             }
             catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException)
@@ -130,9 +281,42 @@ internal static class CfsCommandClient
         return $"CFS.Broker.v2.{hash}";
     }
 
-    private static void ShowError(string message) => Console.Error.WriteLine(message);
+    private static void ShowError(string message)
+    {
+        try { MessageBox.Show(message, "CFS", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        catch { Console.Error.WriteLine(message); }
+    }
 
-    private sealed record ClientRequest(int Version, string Command, string? ArchivePath, string? SourcePath, string? TargetPath, string RequestId, string? SessionId, ulong? ExpectedGeneration, string CancellationId, string? OperationId);
-    private sealed record ClientResponse(int Version, bool Success, string? ErrorCode, string? Message);
+    internal sealed record ClientRequest(int Version, string Command, string? ArchivePath, string? SourcePath, string? TargetPath, string RequestId, string? SessionId, ulong? ExpectedGeneration, string? CancellationId, string? OperationId);
+    internal sealed record ClientResponse(
+        int Version,
+        bool Success,
+        string? ErrorCode,
+        string? Message,
+        string? OperationId = null,
+        string? CancellationId = null,
+        string? OperationState = null,
+        string? OperationResultCode = null,
+        string? PersistenceState = null,
+        bool IsDirty = false,
+        ulong DirtyGeneration = 0,
+        ulong CommittedGeneration = 0,
+        ulong MutationSequence = 0,
+        string? OperationPhase = null,
+        string? CurrentItem = null,
+        long CompletedItems = 0,
+        long? TotalItems = null,
+        long CompletedBytes = 0,
+        long? TotalBytes = null,
+        double? Percent = null,
+        bool CanCancel = false,
+        bool RecoveryFound = false,
+        bool RecoveryOwnershipVerified = false,
+        bool OriginalArchiveValid = false,
+        string? RecoveryState = null,
+        string? RecoveryPhase = null,
+        ulong RecoveryDirtyGeneration = 0,
+        ulong RecoveryCommittedGeneration = 0,
+        ulong RecoveryMutationSequence = 0);
     private sealed class CommandClientException(string message) : Exception(message);
 }

@@ -66,6 +66,7 @@ $compiledSetupPath = Join-Path $installerBuildDir $setupName
 $portableOutput = Join-Path $destinationFull $portableName
 $updatePath = Join-Path $destinationFull 'update.json'
 $checksumsPath = Join-Path $destinationFull 'SHA256SUMS.txt'
+$sbomPath = Join-Path $destinationFull 'CFS-$version-$label-sbom.cdx.json'
 
 if (Test-Path -LiteralPath $sourceFolder -PathType Container) {
     # The copied LZMA source can carry read-only attributes. This exact
@@ -73,13 +74,13 @@ if (Test-Path -LiteralPath $sourceFolder -PathType Container) {
     Get-ChildItem -LiteralPath $sourceFolder -Recurse -Force | ForEach-Object { $_.Attributes = [IO.FileAttributes]::Normal }
     (Get-Item -LiteralPath $sourceFolder -Force).Attributes = [IO.FileAttributes]::Normal
 }
-foreach ($path in @($sourceFolder, $sourceZip, $setupPath, $portableOutput, $updatePath, $checksumsPath)) {
+foreach ($path in @($sourceFolder, $sourceZip, $setupPath, $portableOutput, $updatePath, $checksumsPath, $sbomPath)) {
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
 }
 if (Test-Path -LiteralPath $installerBuildDir) { Remove-Item -LiteralPath $installerBuildDir -Recurse -Force }
 New-Item -ItemType Directory -Path $installerBuildDir -Force | Out-Null
 
-# Build the canonical 0.2 developer staging payload first. This ensures the
+# Build the canonical versioned developer staging payload first. This ensures the
 # installer and portable archive contain the exact same broker-backed payload.
 $publishedFolder = Join-Path $repoRoot "dist\$releaseStem-win-x64"
 & (Join-Path $repoRoot 'tools\Publish-CfsPrototype.ps1') -DeveloperStaging -OutputPath $publishedFolder
@@ -206,7 +207,12 @@ $manifest = [ordered]@{
 $utf8NoBom = New-Object Text.UTF8Encoding($false)
 [IO.File]::WriteAllText($updatePath, ($manifest | ConvertTo-Json -Depth 4) + "`n", $utf8NoBom)
 
-$checksumFiles = @($setupPath, $portableOutput, $sourceZip, $updatePath)
+# The SBOM is deterministic except for its CycloneDX serial; it inventories provenance and
+# hashes of the exact unsigned artifacts before any controlled signing step.
+& (Join-Path $repoRoot 'tools\New-CfsSbom.ps1') -RepositoryRoot $repoRoot -ArtifactDirectory $publishedFolder -OutputPath $sbomPath
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sbomPath)) { throw 'SBOM generation failed.' }
+
+$checksumFiles = @($setupPath, $portableOutput, $sourceZip, $updatePath, $sbomPath)
 $checksumLines = foreach ($file in $checksumFiles) {
     $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $(Split-Path -Leaf $file)"

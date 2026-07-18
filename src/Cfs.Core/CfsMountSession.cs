@@ -27,6 +27,46 @@ public sealed class CfsMountSession
     public CfsMountMode Mode { get; }
     public event EventHandler? ContentChanged;
 
+    /// <summary>
+    /// Bounded metadata-only fallback for missed FileSystemWatcher delivery. It never reads
+    /// file content or asks ProjFS to hydrate a placeholder; it compares the projected
+    /// namespace's names, sizes, and timestamps to the committed manifest.
+    /// </summary>
+    public bool DetectUnobservedChanges(int maximumEntries = 1_000_000)
+    {
+        EnsureOwnedMountFolder();
+        var manifest = CfsArchive.LoadManifestEntries(_archivePath);
+        if (manifest.Count > maximumEntries)
+            throw new CfsArchiveException("CFS refused an unbounded mounted-session reconciliation scan.");
+
+        var expectedFiles = manifest.Where(entry => entry.Type == ArchiveEntryType.File)
+            .ToDictionary(entry => entry.Path, StringComparer.OrdinalIgnoreCase);
+        var expectedDirectories = manifest.Where(entry => entry.Type == ArchiveEntryType.Directory)
+            .Select(entry => entry.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var observedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var observedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var directory in Directory.EnumerateDirectories(FolderPath, "*", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(FolderPath, directory).Replace('\\', '/');
+            if (!expectedDirectories.Contains(relative)) return true;
+            observedDirectories.Add(relative);
+        }
+        if (!expectedDirectories.SetEquals(observedDirectories)) return true;
+
+        foreach (var path in Directory.EnumerateFiles(FolderPath, "*", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(FolderPath, path).Replace('\\', '/');
+            if (relative.Equals(CfsFolderSync.MountMarkerFileName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!expectedFiles.TryGetValue(relative, out var expected)) return true;
+            var info = new FileInfo(path);
+            if (info.Length != expected.OriginalSize || info.LastWriteTimeUtc != expected.LastWriteTimeUtc.UtcDateTime) return true;
+            observedFiles.Add(relative);
+        }
+
+        return !expectedFiles.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(observedFiles);
+    }
+
     public static CfsMountSession Create(CfsArchive archive, string mountFolder, IProgress<CfsProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(archive);
@@ -62,6 +102,7 @@ public sealed class CfsMountSession
             File.SetAttributes(markerPath, FileAttributes.Hidden | FileAttributes.NotContentIndexed);
             FileSystemWatcher? watcher = new(fullPath) { IncludeSubdirectories = true };
             var session = new CfsMountSession(archivePath, fullPath, markerValue, CfsMountMode.ProjFs, projFsMount, watcher);
+            session.AttachProjFsChangeNotifications(projFsMount);
             session.AttachChangeWatcher(watcher);
             watcher.EnableRaisingEvents = true;
             CfsDiagnostics.Logger.WritePathEvent("mount", archivePath, "success");
@@ -121,6 +162,61 @@ public sealed class CfsMountSession
     /// </summary>
     public void CommitChanges(CfsArchive archive, IProgress<CfsProgress>? progress = null, CancellationToken cancellationToken = default)
         => SaveCore(archive, stopProvider: false, progress, cancellationToken);
+
+    /// <summary>
+    /// Materializes the mounted namespace and writes a validated candidate without touching
+    /// the authoritative archive. The broker must atomically promote the candidate first.
+    /// </summary>
+    public bool PrepareCommitCandidate(CfsArchive archive, string candidatePath, IProgress<CfsProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        lock (_saveLock)
+        {
+            Interlocked.Increment(ref _internalCommitDepth);
+            try
+            {
+                EnsureOwnedMountFolder();
+                Thread.Sleep(50);
+                var deleted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                lock (_changeLock) deleted.UnionWith(_deletedPaths);
+                foreach (var entry in CfsArchive.LoadManifestEntries(archive.ArchivePath).Where(entry => entry.Type == ArchiveEntryType.File))
+                {
+                    var path = Path.Combine(FolderPath, entry.Path.Replace('/', Path.DirectorySeparatorChar));
+                    if (!File.Exists(path)) deleted.Add(entry.Path.Replace('\\', '/'));
+                }
+                _projFsMount?.MaterializeForSave(deleted);
+                var changed = CfsFolderSync.ApplyFolderChanges(archive, FolderPath, progress, cancellationToken, deleted, persist: false);
+                if (!changed) return false;
+                archive.WriteValidatedCandidate(candidatePath, cancellationToken);
+                lock (_changeLock)
+                {
+                    foreach (var path in deleted) _deletedPaths.Remove(path);
+                }
+            }
+            finally
+            {
+                if (Interlocked.Decrement(ref _internalCommitDepth) == 0
+                    && Interlocked.Exchange(ref _changeObservedDuringCommit, 0) != 0)
+                    ContentChanged?.Invoke(this, EventArgs.Empty);
+            }
+            return true;
+        }
+    }
+
+    /// <summary>Refreshes ProjFS only after the broker has verified the replacement archive.</summary>
+    public void FinalizeCommittedCandidate()
+    {
+        if (_providerStopped || _projFsMount is null) return;
+        // Refreshing provider metadata after CFS's own verified replacement can emit
+        // synchronous ProjFS notifications. They describe our committed state, not a
+        // new user mutation, and must not schedule a redundant follow-up commit.
+        Interlocked.Increment(ref _internalCommitDepth);
+        try { _projFsMount.RefreshManifest(); }
+        finally
+        {
+            if (Interlocked.Decrement(ref _internalCommitDepth) == 0)
+                Interlocked.Exchange(ref _changeObservedDuringCommit, 0);
+        }
+    }
 
     private void SaveCore(CfsArchive archive, bool stopProvider, IProgress<CfsProgress>? progress, CancellationToken cancellationToken)
     {
@@ -307,6 +403,21 @@ public sealed class CfsMountSession
             try { CfsDiagnostics.Logger.WriteException("mount.watcher", args.GetException()); } catch { }
             ContentChanged?.Invoke(this, EventArgs.Empty);
         };
+    }
+
+    private void AttachProjFsChangeNotifications(CfsProjFsMount mount)
+    {
+        mount.MutationObserved += (_, _) => RecordProjectedMutation();
+    }
+
+    private void RecordProjectedMutation()
+    {
+        if (Volatile.Read(ref _internalCommitDepth) != 0)
+        {
+            Interlocked.Exchange(ref _changeObservedDuringCommit, 1);
+            return;
+        }
+        ContentChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void RecordChanged(string fullPath)

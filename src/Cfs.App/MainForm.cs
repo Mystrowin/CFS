@@ -547,6 +547,15 @@ public sealed class MainForm : Form
         {
             closeCommand.SetValue(null, CfsShellRegistration.BuildCloseCommand(brokerPath));
         }
+        using (var extractVerb = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CFS.Archive\shell\CFS.Extract"))
+        {
+            extractVerb.SetValue(null, "Extract entire CFS archive");
+            extractVerb.SetValue("Icon", brokerPath + ",0");
+        }
+        using (var extractCommand = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CFS.Archive\shell\CFS.Extract\command"))
+        {
+            extractCommand.SetValue(null, CfsShellRegistration.BuildExtractCommand(brokerPath));
+        }
         using (var shellNewKey = Registry.CurrentUser.CreateSubKey(@"Software\Classes\.cfs\ShellNew"))
         {
             shellNewKey.SetValue("FileName", templatePath);

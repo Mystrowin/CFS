@@ -26,8 +26,9 @@ public sealed record BrokerResponse(
     string? Warning = null,
     string? PersistenceState = null,
     bool IsDirty = false,
-    long DirtyGeneration = 0,
-    long CommittedGeneration = 0,
+    ulong DirtyGeneration = 0,
+    ulong CommittedGeneration = 0,
+    ulong MutationSequence = 0,
     DateTimeOffset? LastCommitUtc = null,
     string? LastCommitError = null,
     int SessionCount = 0,
@@ -38,6 +39,23 @@ public sealed record BrokerResponse(
     string? OperationId = null,
     string? CancellationId = null,
     string? OperationState = null,
+    string? OperationResultCode = null,
+    string? OperationPhase = null,
+    string? CurrentItem = null,
+    long CompletedItems = 0,
+    long? TotalItems = null,
+    long CompletedBytes = 0,
+    long? TotalBytes = null,
+    double? Percent = null,
+    bool CanCancel = false,
+    bool RecoveryFound = false,
+    bool RecoveryOwnershipVerified = false,
+    bool OriginalArchiveValid = false,
+    string? RecoveryState = null,
+    string? RecoveryPhase = null,
+    ulong RecoveryDirtyGeneration = 0,
+    ulong RecoveryCommittedGeneration = 0,
+    ulong RecoveryMutationSequence = 0,
     string? ProtocolCapabilities = null);
 
 public static class CfsBrokerErrorCodes
@@ -57,8 +75,10 @@ public static class CfsBrokerErrorCodes
     public const string RecoveryRequired = "CFS_E_RECOVERY_REQUIRED";
     public const string FileInUse = "CFS_E_FILE_IN_USE";
     public const string CommitFailed = "CFS_E_COMMIT_FAILED";
+    public const string DiscardFailed = "CFS_E_DISCARD_FAILED";
     public const string InsufficientSpace = "CFS_E_INSUFFICIENT_SPACE";
     public const string UnsupportedEntry = "CFS_E_UNSUPPORTED_ENTRY";
+    public const string UnsupportedStorage = "CFS_E_UNSUPPORTED_STORAGE";
     public const string InstallationDamaged = "CFS_E_INSTALLATION_DAMAGED";
 }
 

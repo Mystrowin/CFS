@@ -14,8 +14,14 @@ var tests = new (string Name, Func<Task> Body)[]
     ("IPC protocol rejects oversized malformed version and command requests", IpcProtocolRejectsInvalidRequests),
     ("stalled IPC client times out without blocking the next request", StalledIpcClientDoesNotBlockServer),
     ("IPC client deadline bounds connected response waits", IpcClientDeadlineBoundsResponseWait),
+    ("broker operation status and cancellation capability are stable", BrokerOperationStatusAndCancellationAreStable),
+    ("broker permits at most four concurrent mutating operations", BrokerLimitsConcurrentMutations),
+    ("explicit commit and discard preserve their distinct session semantics", ExplicitCommitAndDiscardAreDistinct),
+    ("recovery preview and discard are ownership checked through the broker", RecoveryPreviewAndDiscardAreBrokered),
+    ("read-only compatibility extraction never writes back to the source archive", ReadOnlyCompatibilityNeverWritesBack),
     ("handler timeout is bounded and server accepts the next request", HandlerTimeoutRecovers),
     ("concurrent registry opens create exactly one session and mount path", ConcurrentRegistryOpenCreatesOneSession),
+    ("recovery storage ceiling rejects writable open before session creation", RecoveryStorageCeilingRejectsBeforeOpen),
     ("shell commands use the command client and reject broker App CLI and injection", ShellCommandsUseCommandClientAndAreQuoted),
     ("path-based broker mount is manifest-only and archive-nonmutating", BrokerMountIsManifestOnlyAndNonMutating),
     ("cross-process broker reuses one provider and controlled shutdown cleans", CrossProcessBrokerReusesAndCleans),
@@ -61,6 +67,12 @@ static Task CanonicalArchiveIdentityConvergesAndRejects()
     Assert(!string.IsNullOrWhiteSpace(absolute.HeaderFingerprint) && absolute.HeaderFingerprint.Length == 64, "archive header fingerprint is missing");
     if (absolute.FileId is not null)
     {
+        using (var append = new FileStream(archivePath, FileMode.Append, FileAccess.Write, FileShare.None))
+            append.Write([3, 4, 5]);
+        var inPlaceChange = CfsArchiveIdentity.Create(archivePath);
+        Assert(absolute.RepresentsSameFile(inPlaceChange) && !absolute.MatchesAuthoritativeState(inPlaceChange),
+            "same-file external modification was not distinguished from unchanged authoritative state");
+
         var candidate = Path.Combine(workspace.Root, "replacement.cfs");
         File.WriteAllBytes(candidate, [9, 8, 7]);
         File.Replace(candidate, archivePath, null);
@@ -155,6 +167,163 @@ static async Task IpcClientDeadlineBoundsResponseWait()
     finally { stop.Cancel(); try { await serverTask; } catch (OperationCanceledException) { } }
 }
 
+static async Task BrokerOperationStatusAndCancellationAreStable()
+{
+    using var workspace = new TestWorkspace();
+    await using var registry = CreateFakeRegistry(Path.Combine(workspace.Root, "mounts"));
+    var operations = new CfsBrokerOperationRegistry();
+    var handler = new CfsBrokerRequestHandler(registry, new NoOpExplorer(), false, () => { }, operations: operations);
+    var started = operations.Start("operation-1", "cancel-1");
+    operations.Report(started.OperationId, new CfsProgress("Compressing archive", "Compressing", "folder/file.bin", 2, 4, 512, 1024));
+    var status = await handler.HandleAsync(new BrokerRequest(2, "operation-status", RequestId: "status-1", OperationId: started.OperationId));
+    Assert(status.Success && status.OperationState == CfsBrokerOperationState.Running.ToString()
+        && status.OperationId == started.OperationId && status.CancellationId == started.CancellationId,
+        "operation status did not return its opaque identifiers and running state");
+    Assert(status.OperationPhase == "Compressing" && status.CurrentItem == "folder/file.bin"
+        && status.CompletedItems == 2 && status.TotalItems == 4
+        && status.CompletedBytes == 512 && status.TotalBytes == 1024
+        && status.Percent == 50 && status.CanCancel,
+        "operation status did not return its structured progress fields");
+
+    var rejectedCancel = await handler.HandleAsync(new BrokerRequest(2, "cancel", RequestId: "cancel-bad", OperationId: started.OperationId, CancellationId: "wrong"));
+    Assert(!rejectedCancel.Success && rejectedCancel.ErrorCode == CfsBrokerErrorCodes.AccessDenied, "invalid cancellation capability was accepted");
+    var acceptedCancel = await handler.HandleAsync(new BrokerRequest(2, "cancel", RequestId: "cancel-good", OperationId: started.OperationId, CancellationId: started.CancellationId));
+    Assert(acceptedCancel.Success && acceptedCancel.OperationState == CfsBrokerOperationState.Cancelling.ToString(), "valid cancellation capability was not accepted");
+    Assert(operations.TryGetCancellationToken(started.OperationId, out var token) && token.IsCancellationRequested, "cancellation was not delivered to the operation token");
+
+    operations.Complete(started.OperationId, CfsBrokerOperationState.Cancelled, CfsBrokerErrorCodes.Cancelled);
+    var completed = await handler.HandleAsync(new BrokerRequest(2, "operation-status", RequestId: "status-2", OperationId: started.OperationId));
+    Assert(completed.Success && completed.OperationState == CfsBrokerOperationState.Cancelled.ToString()
+        && completed.OperationResultCode == CfsBrokerErrorCodes.Cancelled && !completed.CanCancel,
+        "terminal cancelled status did not retain its stable result code and cancellation boundary");
+    var lateCancel = await handler.HandleAsync(new BrokerRequest(2, "cancel", RequestId: "cancel-late", OperationId: started.OperationId, CancellationId: started.CancellationId));
+    Assert(!lateCancel.Success && lateCancel.ErrorCode == CfsBrokerErrorCodes.AccessDenied, "a cancellation request rewrote a terminal operation state");
+}
+
+static async Task BrokerLimitsConcurrentMutations()
+{
+    var gate = new CfsMutationConcurrencyGate();
+    var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var entered = 0;
+    var tasks = Enumerable.Range(0, 12).Select(async _ =>
+    {
+        using var lease = await gate.AcquireAsync();
+        Interlocked.Increment(ref entered);
+        await release.Task;
+    }).ToArray();
+
+    var deadline = DateTime.UtcNow.AddSeconds(5);
+    while (Volatile.Read(ref entered) < CfsMutationConcurrencyGate.DefaultLimit && DateTime.UtcNow < deadline)
+        await Task.Delay(10);
+    Assert(entered == CfsMutationConcurrencyGate.DefaultLimit
+        && gate.Active == CfsMutationConcurrencyGate.DefaultLimit
+        && gate.MaximumObserved == CfsMutationConcurrencyGate.DefaultLimit,
+        $"mutation gate admitted {entered} operations instead of exactly four");
+    await Task.Delay(100);
+    Assert(entered == CfsMutationConcurrencyGate.DefaultLimit,
+        "more than four mutating operations entered while the first four were active");
+    release.SetResult();
+    await Task.WhenAll(tasks);
+    Assert(gate.Active == 0 && gate.MaximumObserved == CfsMutationConcurrencyGate.DefaultLimit,
+        "mutation gate did not release every slot cleanly");
+}
+
+static async Task ExplicitCommitAndDiscardAreDistinct()
+{
+    using var workspace = new TestWorkspace();
+    var archive = Path.Combine(workspace.Root, "actions.cfs");
+    File.WriteAllBytes(archive, [1]);
+    ActionSession? active = null;
+    await using var registry = new CfsBrokerSessionRegistry(Path.Combine(workspace.Root, "mounts"), (_, mountPath, _) =>
+    {
+        Directory.CreateDirectory(mountPath);
+        active = new ActionSession(mountPath);
+        return Task.FromResult<ICfsBrokerSession>(active);
+    });
+    var handler = new CfsBrokerRequestHandler(registry, new NoOpExplorer(), false, () => { });
+    var opened = await handler.HandleAsync(new BrokerRequest(2, "open", ArchivePath: archive, RequestId: "open-actions"));
+    Assert(opened.Success && active is not null, "action fixture did not open");
+    var session = active ?? throw new InvalidOperationException("action fixture did not create its session");
+
+    var committed = await handler.HandleAsync(new BrokerRequest(2, "commit", ArchivePath: archive, RequestId: "commit-actions"));
+    Assert(committed.Success && session.FlushCount == 1 && registry.SessionCount == 1 && Directory.Exists(session.MountPath),
+        "explicit commit did not flush exactly once while keeping the session mounted");
+
+    var discarded = await handler.HandleAsync(new BrokerRequest(2, "discard", ArchivePath: archive, RequestId: "discard-actions"));
+    Assert(discarded.Success && session.DiscardCount == 1 && session.FlushCount == 1
+        && registry.SessionCount == 0 && !Directory.Exists(session.MountPath),
+        "explicit discard committed data or failed to remove the live session");
+
+    var missing = await handler.HandleAsync(new BrokerRequest(2, "commit", ArchivePath: archive, RequestId: "commit-missing"));
+    Assert(!missing.Success && missing.ErrorCode == CfsBrokerErrorCodes.SessionNotFound,
+        "commit against a missing session did not return the stable session-not-found error");
+}
+
+static async Task RecoveryPreviewAndDiscardAreBrokered()
+{
+    using var workspace = new TestWorkspace();
+    var archive = Path.Combine(workspace.Root, "recovery-actions.cfs");
+    CfsArchive.CreateEmpty(archive);
+    var before = Hash(archive);
+    var identity = CfsArchiveIdentity.Create(archive);
+    var recoveryRoot = Path.Combine(workspace.Root, "recovery-root");
+    var mount = Path.Combine(recoveryRoot, identity.MountKey);
+    Directory.CreateDirectory(mount);
+    File.WriteAllText(Path.Combine(mount, ".cfs-mount-session"), Guid.NewGuid().ToString("N"));
+    var transaction = CfsSessionTransaction.Create(identity, mount);
+    File.WriteAllText(Path.Combine(mount, "pending.txt"), "recoverable");
+    transaction.MarkCommitPending(4);
+
+    await using var registry = CreateFakeRegistry(Path.Combine(workspace.Root, "live-mounts"));
+    var explorer = new RecordingExplorer();
+    var handler = new CfsBrokerRequestHandler(registry, explorer, false, () => { }, recoveryRoot: recoveryRoot);
+    var status = await handler.HandleAsync(new BrokerRequest(2, "recovery-status", ArchivePath: archive, RequestId: "recovery-status"));
+    Assert(status.Success && status.RecoveryFound && status.RecoveryOwnershipVerified && status.OriginalArchiveValid
+        && status.RecoveryState == CfsSessionTransactionState.CommitPending.ToString()
+        && status.RecoveryDirtyGeneration == 4 && status.RecoveryCommittedGeneration == 0,
+        "broker recovery status omitted verified state or generation evidence");
+
+    var revealed = await handler.HandleAsync(new BrokerRequest(2, "recover", ArchivePath: archive, RequestId: "recover"));
+    Assert(revealed.Success && explorer.LastFolder == Path.GetFullPath(mount)
+        && File.Exists(Path.Combine(mount, "pending.txt")) && Hash(archive) == before,
+        "recover did not reveal the preserved workspace or changed the original archive");
+
+    var discarded = await handler.HandleAsync(new BrokerRequest(2, "discard-recovery", ArchivePath: archive, RequestId: "discard-recovery"));
+    Assert(discarded.Success && !Directory.Exists(mount) && Hash(archive) == before,
+        "broker recovery discard retained owned data or changed the original archive");
+}
+
+static async Task ReadOnlyCompatibilityNeverWritesBack()
+{
+    using var workspace = new TestWorkspace();
+    var source = Path.Combine(workspace.Root, "readonly-source");
+    Directory.CreateDirectory(source);
+    File.WriteAllText(Path.Combine(source, "entry.txt"), "original");
+    var archive = Path.Combine(workspace.Root, "readonly.cfs");
+    CfsArchive.CreateFromFolder(source, archive);
+    var before = Hash(archive);
+    var readOnlyRoot = Path.Combine(workspace.Root, "read-only-mounts");
+    await using var writable = CreateFakeRegistry(Path.Combine(workspace.Root, "writable-mounts"));
+    await using var readOnly = new CfsBrokerSessionRegistry(readOnlyRoot, (identity, mountPath, cancellationToken) =>
+    {
+        var session = CfsMountSession.CreateCompatibility(CfsArchive.Load(identity.FullPath), mountPath, cancellationToken: cancellationToken);
+        return Task.FromResult<ICfsBrokerSession>(new CfsReadOnlyBrokerSession(session));
+    });
+    var explorer = new RecordingExplorer();
+    var handler = new CfsBrokerRequestHandler(writable, explorer, false, () => { }, readOnlySessions: readOnly);
+    var opened = await handler.HandleAsync(new BrokerRequest(2, "open-readonly", ArchivePath: archive, RequestId: "open-readonly"));
+    Assert(opened.Success && opened.Warning!.Contains("no changes are written back", StringComparison.OrdinalIgnoreCase)
+        && explorer.LastFolder == opened.MountPath && File.ReadAllText(Path.Combine(opened.MountPath!, "entry.txt")) == "original",
+        "read-only compatibility mode did not explicitly identify and open its full extraction");
+
+    File.WriteAllText(Path.Combine(opened.MountPath!, "entry.txt"), "must-be-discarded");
+    File.WriteAllText(Path.Combine(opened.MountPath!, "new.txt"), "must-be-discarded");
+    var closed = await handler.HandleAsync(new BrokerRequest(2, "close", ArchivePath: archive, RequestId: "close-readonly"));
+    Assert(closed.Success && !Directory.Exists(opened.MountPath) && Hash(archive) == before
+        && Encoding.UTF8.GetString(CfsArchive.Load(archive).ReadFile("entry.txt")).TrimStart('\uFEFF') == "original",
+        "closing read-only compatibility mode wrote workspace edits back or retained its controlled extraction");
+}
+
 static async Task HandlerTimeoutRecovers()
 {
     using var workspace = new TestWorkspace();
@@ -198,6 +367,32 @@ static async Task ConcurrentRegistryOpenCreatesOneSession()
     Assert(opens.Select(open => open.MountPath).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1, "concurrent opens returned different mount paths");
 }
 
+static async Task RecoveryStorageCeilingRejectsBeforeOpen()
+{
+    using var workspace = new TestWorkspace();
+    var archivePath = Path.Combine(workspace.Root, "limit.cfs");
+    File.WriteAllBytes(archivePath, [1]);
+    var mountRoot = Path.Combine(workspace.Root, "mounts");
+    Directory.CreateDirectory(mountRoot);
+    File.WriteAllBytes(Path.Combine(mountRoot, "existing-recovery.bin"), new byte[4096]);
+    var factoryCalls = 0;
+    await using var registry = new CfsBrokerSessionRegistry(
+        mountRoot,
+        (_, mountPath, _) =>
+        {
+            Interlocked.Increment(ref factoryCalls);
+            return Task.FromResult<ICfsBrokerSession>(new FakeSession(mountPath));
+        },
+        storageLimitBytes: 1);
+
+    var identity = CfsArchiveIdentity.Create(archivePath);
+    await AssertThrowsAsync<BrokerRequestException>(
+        () => registry.OpenAsync(identity),
+        ex => ex.ErrorCode == CfsBrokerErrorCodes.InsufficientSpace);
+    Assert(factoryCalls == 0 && registry.SessionCount == 0 && registry.CreatedSessionCount == 0,
+        "recovery storage ceiling created a writable session before rejecting the open");
+}
+
 static Task ShellCommandsUseCommandClientAndAreQuoted()
 {
     using var workspace = new TestWorkspace();
@@ -205,6 +400,14 @@ static Task ShellCommandsUseCommandClientAndAreQuoted()
     var command = CfsShellRegistration.BuildOpenCommand(broker);
     Assert(command == $"\"{Path.GetFullPath(broker)}\" open \"%1\"", "command-client shell command quoting changed");
     Assert(command.Count(ch => ch == '"') == 4 && command.Contains(" open ", StringComparison.Ordinal), "command is not one quoted command-client invocation");
+    Assert(CfsShellRegistration.BuildCommitCommand(broker) == $"\"{Path.GetFullPath(broker)}\" commit \"%1\""
+        && CfsShellRegistration.BuildDiscardCommand(broker) == $"\"{Path.GetFullPath(broker)}\" discard \"%1\""
+        && CfsShellRegistration.BuildStatusCommand(broker) == $"\"{Path.GetFullPath(broker)}\" status \"%1\""
+        && CfsShellRegistration.BuildRecoverCommand(broker) == $"\"{Path.GetFullPath(broker)}\" recover \"%1\""
+        && CfsShellRegistration.BuildRecoveryStatusCommand(broker) == $"\"{Path.GetFullPath(broker)}\" recovery-status \"%1\""
+        && CfsShellRegistration.BuildDiscardRecoveryCommand(broker) == $"\"{Path.GetFullPath(broker)}\" discard-recovery \"%1\""
+        && CfsShellRegistration.BuildOpenReadOnlyCommand(broker) == $"\"{Path.GetFullPath(broker)}\" open-readonly \"%1\"",
+        "commit/discard/status/recovery shell command quoting changed");
     AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.CommandClient.exe", "Cfs.Broker.exe")), _ => true);
     AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.CommandClient.exe", "Cfs.App.exe")), _ => true);
     AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.CommandClient.exe", "Cfs.Cli.exe")), _ => true);
@@ -219,6 +422,14 @@ static Task ShellCommandsUseCommandClientAndAreQuoted()
     var dryRun = RunAssociationScript(root, dryRunBroker, template);
     Assert(dryRun.ExitCode == 0 && dryRun.Output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
         .Contains("OPEN_COMMAND=" + CfsShellRegistration.BuildOpenCommand(dryRunBroker)), "association dry-run did not emit the exact quoted broker open command");
+    Assert(dryRun.Output.Contains("COMMIT_VERB_COMMAND=" + CfsShellRegistration.BuildCommitCommand(dryRunBroker), StringComparison.Ordinal)
+        && dryRun.Output.Contains("DISCARD_VERB_COMMAND=" + CfsShellRegistration.BuildDiscardCommand(dryRunBroker), StringComparison.Ordinal)
+        && dryRun.Output.Contains("STATUS_VERB_COMMAND=" + CfsShellRegistration.BuildStatusCommand(dryRunBroker), StringComparison.Ordinal)
+        && dryRun.Output.Contains("RECOVER_VERB_COMMAND=" + CfsShellRegistration.BuildRecoverCommand(dryRunBroker), StringComparison.Ordinal)
+        && dryRun.Output.Contains("RECOVERY_STATUS_VERB_COMMAND=" + CfsShellRegistration.BuildRecoveryStatusCommand(dryRunBroker), StringComparison.Ordinal)
+        && dryRun.Output.Contains("DISCARD_RECOVERY_VERB_COMMAND=" + CfsShellRegistration.BuildDiscardRecoveryCommand(dryRunBroker), StringComparison.Ordinal)
+        && dryRun.Output.Contains("OPEN_READONLY_VERB_COMMAND=" + CfsShellRegistration.BuildOpenReadOnlyCommand(dryRunBroker), StringComparison.Ordinal),
+        "association dry-run omitted an exact commit/discard/status/recovery command");
     foreach (var forbidden in new[] { "Cfs.Broker.exe", "Cfs.App.exe", "Cfs.Cli.exe" })
     {
         var forbiddenPath = Path.Combine(workspace.Root, forbidden); File.Copy(builtBroker, forbiddenPath);
@@ -473,7 +684,37 @@ sealed class FakeSession : ICfsBrokerSession
     public string MountPath { get; }
     public ValueTask DisposeAsync() { if (Directory.Exists(MountPath)) Directory.Delete(MountPath, true); return ValueTask.CompletedTask; }
 }
+sealed class ActionSession : ICfsBrokerSession, ICfsPersistentBrokerSession, ICfsDiscardableBrokerSession
+{
+    public ActionSession(string mountPath) => MountPath = mountPath;
+    public string MountPath { get; }
+    public int FlushCount { get; private set; }
+    public int DiscardCount { get; private set; }
+    public CfsPersistenceStatus PersistenceStatus { get; private set; } =
+        new(CfsPersistenceState.Dirty, true, 2, 1, null, null);
+    public Task FlushAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        FlushCount++;
+        PersistenceStatus = new(CfsPersistenceState.Clean, false, 2, 2, DateTimeOffset.UtcNow, null);
+        return Task.CompletedTask;
+    }
+    public Task DiscardAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        DiscardCount++;
+        if (Directory.Exists(MountPath)) Directory.Delete(MountPath, true);
+        PersistenceStatus = new(CfsPersistenceState.Stopped, false, 2, 2, null, null);
+        return Task.CompletedTask;
+    }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
 sealed class NoOpExplorer : ICfsExplorerLauncher { public void OpenFolder(string folderPath) { } }
+sealed class RecordingExplorer : ICfsExplorerLauncher
+{
+    public string? LastFolder { get; private set; }
+    public void OpenFolder(string folderPath) => LastFolder = Path.GetFullPath(folderPath);
+}
 static class LegacyCfs1Writer
 {
     public static void Write(string archivePath, string entryPath, byte[] bytes)

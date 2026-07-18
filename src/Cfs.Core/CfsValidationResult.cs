@@ -6,4 +6,5 @@ public sealed class CfsValidationResult
     public int FileCount { get; init; }
     public int DirectoryCount { get; init; }
     public string Message { get; init; } = string.Empty;
+    public IReadOnlyList<string> Warnings { get; init; } = [];
 }

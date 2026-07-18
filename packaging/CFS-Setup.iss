@@ -33,7 +33,7 @@ ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 MinVersion=10.0.17763
 OutputDir={#OutputDir}
-OutputBaseFilename=CFS-0.2.0-Beta-Setup
+OutputBaseFilename=CFS-0.3.0-Beta-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -53,17 +53,41 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 ; These keys deliberately survive the automatic uninstall pass. The [Code]
 ; section removes them only if they still point at this CFS installation.
 [Registry]
-Root: HKLM; Subkey: "Software\Classes\.cfs"; ValueType: string; ValueName: ""; ValueData: "CFS.Archive"; Flags: uninsneveruninstall
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive"; ValueType: string; ValueName: ""; ValueData: "CFS Compressed Folder"; Flags: uninsneveruninstall
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#ProductExe},0"; Flags: uninsneveruninstall
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" open ""%1"""; Flags: uninsneveruninstall
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close"; ValueType: string; ValueName: ""; ValueData: "Close CFS"; Flags: uninsneveruninstall
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#BrokerExe},0"; Flags: uninsneveruninstall
-Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" close ""%1"""; Flags: uninsneveruninstall
-Root: HKLM; Subkey: "Software\Classes\.cfs\ShellNew"; ValueType: string; ValueName: "FileName"; ValueData: "{app}\ShellNew\CFS-Empty.cfs"; Flags: uninsneveruninstall
-Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress"; ValueType: string; ValueName: ""; ValueData: "Compress to CFS"; Flags: uninsneveruninstall
-Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#BrokerExe},0"; Flags: uninsneveruninstall
-Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" compress ""%1"""; Flags: uninsneveruninstall
+Root: HKLM; Subkey: "Software\Classes\.cfs"; ValueType: string; ValueName: ""; ValueData: "CFS.Archive"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive"; ValueType: string; ValueName: ""; ValueData: "CFS Compressed Folder"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#ProductExe},0"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" open ""%1"""
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close"; ValueType: string; ValueName: ""; ValueData: "Close CFS"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Close\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" close ""%1"""
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Extract"; ValueType: string; ValueName: ""; ValueData: "Extract entire CFS archive"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Extract"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Extract\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" extract ""%1"""
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Commit"; ValueType: string; ValueName: ""; ValueData: "Commit pending changes"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Commit"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Commit\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" commit ""%1"""
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Discard"; ValueType: string; ValueName: ""; ValueData: "Discard pending changes"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Discard"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Discard\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" discard ""%1"""
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Status"; ValueType: string; ValueName: ""; ValueData: "Show CFS status"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Status"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Status\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" status ""%1"""
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Recover"; ValueType: string; ValueName: ""; ValueData: "Open recovery workspace"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Recover"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.Recover\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" recover ""%1"""
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.RecoveryStatus"; ValueType: string; ValueName: ""; ValueData: "Show recovery status"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.RecoveryStatus"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.RecoveryStatus\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" recovery-status ""%1"""
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.DiscardRecovery"; ValueType: string; ValueName: ""; ValueData: "Discard recovery data"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.DiscardRecovery"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.DiscardRecovery\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" discard-recovery ""%1"""
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.OpenReadOnly"; ValueType: string; ValueName: ""; ValueData: "Open read-only (full extraction)"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.OpenReadOnly"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
+Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.OpenReadOnly\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" open-readonly ""%1"""
+Root: HKLM; Subkey: "Software\Classes\.cfs\ShellNew"; ValueType: string; ValueName: "FileName"; ValueData: "{app}\ShellNew\CFS-Empty.cfs"
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress"; ValueType: string; ValueName: ""; ValueData: "Compress to CFS"
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#BrokerExe},0"
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" compress ""%1"""
 
 [Code]
 var
@@ -223,7 +247,7 @@ begin
   Result := False;
   if not IsWin64 then
   begin
-    MsgBox('CFS 0.2.0 Beta requires 64-bit Windows.', mbError, MB_OK);
+    MsgBox('CFS 0.3.0 Beta requires 64-bit Windows.', mbError, MB_OK);
     Exit;
   end;
 
@@ -265,6 +289,25 @@ begin
   Result := ProjFsRestartRequired;
 end;
 
+procedure RemoveOwnedArchiveVerb(VerbName: String; LabelText: String; InstalledVerbCommand: String);
+var
+  VerbPath: String;
+  RegisteredValue: String;
+begin
+  VerbPath := 'Software\Classes\CFS.Archive\shell\' + VerbName;
+  if RegQueryStringValue(HKLM, VerbPath + '\command', '', RegisteredValue) and
+     (CompareText(RegisteredValue, InstalledVerbCommand) = 0) then
+    RegDeleteValue(HKLM, VerbPath + '\command', '');
+  if RegQueryStringValue(HKLM, VerbPath, '', RegisteredValue) and
+     (CompareText(RegisteredValue, LabelText) = 0) then
+    RegDeleteValue(HKLM, VerbPath, '');
+  if RegQueryStringValue(HKLM, VerbPath, 'Icon', RegisteredValue) and
+     (CompareText(RegisteredValue, ExpandConstant('{app}\{#CommandClientExe},0')) = 0) then
+    RegDeleteValue(HKLM, VerbPath, 'Icon');
+  RegDeleteKeyIfEmpty(HKLM, VerbPath + '\command');
+  RegDeleteKeyIfEmpty(HKLM, VerbPath);
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ExtensionOwner: String;
@@ -272,8 +315,14 @@ var
   InstalledCommand: String;
   InstalledCompressCommand: String;
   InstalledCloseCommand: String;
+  InstalledExtractCommand: String;
+  InstalledCommitCommand: String;
+  InstalledDiscardCommand: String;
+  InstalledStatusCommand: String;
   RegisteredCompressCommand: String;
   RegisteredCloseCommand: String;
+  RegisteredExtractCommand: String;
+  RegisteredActionCommand: String;
   InstalledTemplate: String;
   RegisteredTemplate: String;
   RegisteredDescription: String;
@@ -287,7 +336,19 @@ begin
   InstalledCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" open "%1"';
   InstalledCompressCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" compress "%1"';
   InstalledCloseCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" close "%1"';
+  InstalledExtractCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" extract "%1"';
+  InstalledCommitCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" commit "%1"';
+  InstalledDiscardCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" discard "%1"';
+  InstalledStatusCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" status "%1"';
   InstalledTemplate := ExpandConstant('{app}\ShellNew\CFS-Empty.cfs');
+  RemoveOwnedArchiveVerb('CFS.Recover', 'Open recovery workspace',
+    '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" recover "%1"');
+  RemoveOwnedArchiveVerb('CFS.RecoveryStatus', 'Show recovery status',
+    '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" recovery-status "%1"');
+  RemoveOwnedArchiveVerb('CFS.DiscardRecovery', 'Discard recovery data',
+    '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" discard-recovery "%1"');
+  RemoveOwnedArchiveVerb('CFS.OpenReadOnly', 'Open read-only (full extraction)',
+    '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" open-readonly "%1"');
   if RegQueryStringValue(HKLM, 'Software\Classes\.cfs', '', ExtensionOwner) and
      (CompareText(ExtensionOwner, 'CFS.Archive') = 0) then
   begin
@@ -306,8 +367,48 @@ begin
      (CompareText(RegisteredVerbLabel, 'Close CFS') = 0) then
     RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Close', '');
   if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Close', 'Icon', RegisteredVerbIcon) and
-     (CompareText(RegisteredVerbIcon, ExpandConstant('{app}\{#BrokerExe},0')) = 0) then
+     (CompareText(RegisteredVerbIcon, ExpandConstant('{app}\{#CommandClientExe},0')) = 0) then
     RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Close', 'Icon');
+
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Extract\command', '', RegisteredExtractCommand) and
+     (CompareText(RegisteredExtractCommand, InstalledExtractCommand) = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Extract\command', '');
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Extract', '', RegisteredVerbLabel) and
+     (CompareText(RegisteredVerbLabel, 'Extract entire CFS archive') = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Extract', '');
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Extract', 'Icon', RegisteredVerbIcon) and
+     (CompareText(RegisteredVerbIcon, ExpandConstant('{app}\{#CommandClientExe},0')) = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Extract', 'Icon');
+
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Commit\command', '', RegisteredActionCommand) and
+     (CompareText(RegisteredActionCommand, InstalledCommitCommand) = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Commit\command', '');
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Commit', '', RegisteredVerbLabel) and
+     (CompareText(RegisteredVerbLabel, 'Commit pending changes') = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Commit', '');
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Commit', 'Icon', RegisteredVerbIcon) and
+     (CompareText(RegisteredVerbIcon, ExpandConstant('{app}\{#CommandClientExe},0')) = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Commit', 'Icon');
+
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Discard\command', '', RegisteredActionCommand) and
+     (CompareText(RegisteredActionCommand, InstalledDiscardCommand) = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Discard\command', '');
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Discard', '', RegisteredVerbLabel) and
+     (CompareText(RegisteredVerbLabel, 'Discard pending changes') = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Discard', '');
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Discard', 'Icon', RegisteredVerbIcon) and
+     (CompareText(RegisteredVerbIcon, ExpandConstant('{app}\{#CommandClientExe},0')) = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Discard', 'Icon');
+
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Status\command', '', RegisteredActionCommand) and
+     (CompareText(RegisteredActionCommand, InstalledStatusCommand) = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Status\command', '');
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Status', '', RegisteredVerbLabel) and
+     (CompareText(RegisteredVerbLabel, 'Show CFS status') = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Status', '');
+  if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Status', 'Icon', RegisteredVerbIcon) and
+     (CompareText(RegisteredVerbIcon, ExpandConstant('{app}\{#CommandClientExe},0')) = 0) then
+    RegDeleteValue(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Status', 'Icon');
 
   if RegQueryStringValue(HKLM, 'Software\Classes\CFS.Archive', '', RegisteredDescription) and
      (CompareText(RegisteredDescription, 'CFS Compressed Folder') = 0) then
@@ -338,6 +439,14 @@ begin
   RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell\open');
   RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Close\command');
   RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Close');
+  RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Extract\command');
+  RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Extract');
+  RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Commit\command');
+  RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Commit');
+  RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Discard\command');
+  RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Discard');
+  RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Status\command');
+  RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell\CFS.Status');
   RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\shell');
   RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive\DefaultIcon');
   RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive');

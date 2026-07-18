@@ -39,20 +39,77 @@ internal static class Program
             }
 
             using var shutdown = new CancellationTokenSource();
-            var mountRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CFS", "Sessions");
             var controlledTests = Environment.GetEnvironmentVariable("CFS_BROKER_ALLOW_SHUTDOWN") == "1";
+            var mountRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CFS", "Sessions");
+            if (controlledTests && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CFS_BROKER_TEST_SESSION_ROOT")))
+            {
+                var requestedRoot = Path.GetFullPath(Environment.GetEnvironmentVariable("CFS_BROKER_TEST_SESSION_ROOT")!);
+                var controlledRoot = Path.GetFullPath(controlledTestLogDirectory!);
+                if (!requestedRoot.StartsWith(controlledRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Controlled session root must remain under the controlled test log directory.");
+                mountRoot = requestedRoot;
+            }
             var quietPeriod = controlledTests && int.TryParse(Environment.GetEnvironmentVariable("CFS_BROKER_TEST_QUIET_PERIOD_MS"), out var quietMilliseconds)
                 ? TimeSpan.FromMilliseconds(Math.Clamp(quietMilliseconds, 10, 60_000))
                 : TimeSpan.FromMilliseconds(750);
             var injectedCommitFailures = controlledTests && int.TryParse(Environment.GetEnvironmentVariable("CFS_BROKER_TEST_COMMIT_FAILURE_COUNT"), out var failureCount)
                 ? Math.Max(0, failureCount)
                 : 0;
+            var injectedAvailableSpace = controlledTests && long.TryParse(Environment.GetEnvironmentVariable("CFS_BROKER_TEST_AVAILABLE_SPACE_BYTES"), out var availableSpace)
+                ? Math.Max(0, availableSpace)
+                : (long?)null;
+            var recoveryStorageLimit = CfsRecoveryStoragePolicy.ResolveLimit(
+                controlledTests && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CFS_BROKER_TEST_RECOVERY_STORAGE_LIMIT_BYTES"))
+                    ? Environment.GetEnvironmentVariable("CFS_BROKER_TEST_RECOVERY_STORAGE_LIMIT_BYTES")
+                    : Environment.GetEnvironmentVariable("CFS_RECOVERY_STORAGE_LIMIT_BYTES"));
+            Action<CfsCommitPhase>? commitPhaseObserver = null;
+            var pausePhaseText = controlledTests ? Environment.GetEnvironmentVariable("CFS_BROKER_TEST_PAUSE_COMMIT_PHASE") : null;
+            var phaseSignalPath = controlledTests ? Environment.GetEnvironmentVariable("CFS_BROKER_TEST_PHASE_SIGNAL_FILE") : null;
+            if (!string.IsNullOrWhiteSpace(pausePhaseText)
+                && Enum.TryParse<CfsCommitPhase>(pausePhaseText, ignoreCase: true, out var pausePhase)
+                && !string.IsNullOrWhiteSpace(phaseSignalPath))
+            {
+                var fullSignalPath = Path.GetFullPath(phaseSignalPath);
+                var fullLogRoot = Path.GetFullPath(controlledTestLogDirectory!);
+                if (!fullSignalPath.StartsWith(fullLogRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Controlled commit-phase signal must remain under the controlled test log directory.");
+                commitPhaseObserver = phase =>
+                {
+                    if (phase != pausePhase) return;
+                    Directory.CreateDirectory(Path.GetDirectoryName(fullSignalPath)!);
+                    File.WriteAllText(fullSignalPath, JsonSerializer.Serialize(new
+                    {
+                        phase = phase.ToString(),
+                        brokerProcessId = Environment.ProcessId,
+                        utc = DateTimeOffset.UtcNow
+                    }));
+                    using var neverReleased = new ManualResetEvent(false);
+                    neverReleased.WaitOne();
+                };
+            }
+            var failReplacementValidation = controlledTests
+                && Environment.GetEnvironmentVariable("CFS_BROKER_TEST_FAIL_REPLACEMENT_VALIDATION") == "1";
+            var failBackupRestore = controlledTests
+                && Environment.GetEnvironmentVariable("CFS_BROKER_TEST_FAIL_BACKUP_RESTORE") == "1";
+            var injectedCloseValidationFailures = controlledTests
+                && int.TryParse(Environment.GetEnvironmentVariable("CFS_BROKER_TEST_CLOSE_VALIDATION_FAILURE_COUNT"), out var closeValidationFailures)
+                    ? Math.Max(0, closeValidationFailures)
+                    : 0;
             if (controlledTests && Environment.GetEnvironmentVariable("CFS_BROKER_TEST_CLEANUP_FAILURE") == "1")
                 CfsMountSession.DeleteDirectory = _ => throw new IOException("Injected locked mount cleanup failure.");
             await using var sessions = new CfsBrokerSessionRegistry(mountRoot, (identity, mountPath, cancellationToken) =>
             {
+                var storage = CfsWritableStoragePolicy.Evaluate(identity.FullPath);
+                if (!storage.IsSupported)
+                    throw new BrokerRequestException(CfsBrokerErrorCodes.UnsupportedStorage, storage.Message);
+                var mountStorage = CfsWritableStoragePolicy.Evaluate(mountPath);
+                if (!mountStorage.IsSupported)
+                    throw new BrokerRequestException(CfsBrokerErrorCodes.UnsupportedStorage, mountStorage.Message);
                 var recovery = CfsSessionTransaction.RecoverBeforeOpen(identity, mountPath);
-                if (recovery.RecoveryNeeded) throw new BrokerRequestException("recovery-needed", recovery.Message);
+                if (recovery.RecoveryNeeded) throw new BrokerRequestException(CfsBrokerErrorCodes.RecoveryRequired, recovery.Message);
+                var availability = CfsProjFsPrerequisite.Check();
+                if (!availability.IsAvailable)
+                    throw new BrokerRequestException(CfsBrokerErrorCodes.ProjFsUnavailable, availability.Message);
                 var session = CfsMountSession.Create(identity.FullPath, mountPath, cancellationToken: cancellationToken);
                 try
                 {
@@ -67,20 +124,33 @@ internal static class Program
                             session.CommitChanges(archive, cancellationToken: token);
                         }, token);
                     };
-                    return Task.FromResult<ICfsBrokerSession>(new CfsBrokerMountedSession(identity.FullPath, session, quietPeriod, commit: commit, transaction: transaction, authoritativeIdentity: identity));
+                    return Task.FromResult<ICfsBrokerSession>(new CfsBrokerMountedSession(identity.FullPath, session, quietPeriod, commit: commit, transaction: transaction,
+                        authoritativeIdentity: identity, availableFreeSpace: injectedAvailableSpace is { } freeSpace ? _ => freeSpace : null,
+                        commitPhaseObserver: commitPhaseObserver, failReplacementValidation: failReplacementValidation, failBackupRestore: failBackupRestore,
+                        failCloseValidation: injectedCloseValidationFailures > 0
+                            ? () => Interlocked.Decrement(ref injectedCloseValidationFailures) >= 0
+                            : null,
+                        recoveryStorageLimitBytes: recoveryStorageLimit));
                 }
                 catch
                 {
                     try { session.PermanentlyDelete(cancellationToken: cancellationToken); } catch { }
                     throw;
                 }
+            }, storageLimitBytes: recoveryStorageLimit);
+            var readOnlyRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CFS", "ReadOnlySessions");
+            await using var readOnlySessions = new CfsBrokerSessionRegistry(readOnlyRoot, (identity, mountPath, cancellationToken) =>
+            {
+                var archive = CfsArchive.Load(identity.FullPath, cancellationToken: cancellationToken);
+                var session = CfsMountSession.CreateCompatibility(archive, mountPath, cancellationToken: cancellationToken);
+                return Task.FromResult<ICfsBrokerSession>(new CfsReadOnlyBrokerSession(session));
             });
             ICfsExplorerLauncher explorer = Environment.GetEnvironmentVariable("CFS_BROKER_DISABLE_EXPLORER") == "1"
                 ? new NoOpExplorerLauncher()
                 : new CfsExplorerLauncher();
             var handler = new CfsBrokerRequestHandler(sessions, explorer,
                 Environment.GetEnvironmentVariable("CFS_BROKER_ALLOW_SHUTDOWN") == "1", shutdown.Cancel,
-                new CfsCreationOperations(() => new CfsNativeProgressSurface()));
+                new CfsCreationOperations(() => new CfsNativeProgressSurface()), recoveryRoot: mountRoot, readOnlySessions: readOnlySessions);
             var server = new CfsBrokerPipeServer(names.PipeName, handler, deadlinePolicy: deadlines);
             var serverTask = server.RunAsync(shutdown.Token);
 
@@ -122,13 +192,21 @@ internal static class Program
         return WithRequestId(command switch
         {
             "open" when args.Length >= 2 => new(CfsBrokerProtocol.CurrentVersion, command, args[1]),
+            "open-readonly" when args.Length >= 2 => new(CfsBrokerProtocol.CurrentVersion, command, args[1]),
             "close" when args.Length >= 2 => new(CfsBrokerProtocol.CurrentVersion, command, args[1]),
             "create-empty" when args.Length >= 2 => new(CfsBrokerProtocol.CurrentVersion, command, TargetPath: args[1]),
             "compress" when args.Length >= 2 => new(CfsBrokerProtocol.CurrentVersion, command, SourcePath: args[1]),
+            "extract" when args.Length >= 2 => new(CfsBrokerProtocol.CurrentVersion, command, ArchivePath: args[1]),
             "status" or "query" => new(CfsBrokerProtocol.CurrentVersion, command,
                 ArchivePath: args.Length >= 2 && !args[1].StartsWith("--", StringComparison.Ordinal) ? args[1] : null),
+            "operation-status" when args.Length >= 2 => new(CfsBrokerProtocol.CurrentVersion, command, OperationId: args[1]),
+            "commit" or "discard" when args.Length >= 2 => new(CfsBrokerProtocol.CurrentVersion, command, ArchivePath: args[1]),
+            "recover" or "recovery-status" or "discard-recovery" when args.Length >= 2 => new(CfsBrokerProtocol.CurrentVersion, command, ArchivePath: args[1]),
+            "cancel" when args.Length >= 3 => new(CfsBrokerProtocol.CurrentVersion, command, OperationId: args[1], CancellationId: args[2]),
             "shutdown" => new(CfsBrokerProtocol.CurrentVersion, command),
-            "open" or "close" or "create-empty" or "compress" => throw new BrokerRequestException("invalid-path", $"The {command} command requires a path."),
+            "open" or "open-readonly" or "close" or "create-empty" or "compress" or "extract" => throw new BrokerRequestException("invalid-path", $"The {command} command requires a path."),
+            "operation-status" => throw new BrokerRequestException(CfsBrokerErrorCodes.InvalidRequest, "The operation-status command requires an operation ID."),
+            "cancel" => throw new BrokerRequestException(CfsBrokerErrorCodes.InvalidRequest, "The cancel command requires an operation ID and cancellation ID."),
             _ => new(CfsBrokerProtocol.CurrentVersion, command)
         });
     }

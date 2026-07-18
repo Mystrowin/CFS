@@ -149,12 +149,11 @@ static async Task LockedMountCloseIsRetryable()
 static async Task ValidationPrecedesCleanup()
 {
     if (!OperatingSystem.IsWindows()) return; using var workspace = new Workspace(); var archive = CreateArchive(workspace.Root, "validate", "x.txt", "value");
-    await using var broker = new CloseBrokerHarness(workspace.Root); var opened = await broker.CommandAsync("open", archive); Assert(opened.Success, "validation fixture open failed: " + Describe(opened)); _ = File.ReadAllText(Path.Combine(opened.MountPath!, "x.txt"));
-    var validBytes = File.ReadAllBytes(archive); using (var stream = new FileStream(archive, FileMode.Open, FileAccess.Write, FileShare.Read)) { stream.Write("BAD!"u8); stream.Flush(true); }
+    await using var broker = new CloseBrokerHarness(workspace.Root, validationFailure: true); var opened = await broker.CommandAsync("open", archive); Assert(opened.Success, "validation fixture open failed: " + Describe(opened)); _ = File.ReadAllText(Path.Combine(opened.MountPath!, "x.txt"));
+    AssertThrows<IOException>(() => { using var _ = new FileStream(archive, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete); }, "writable session did not block external archive corruption");
     var failed = await broker.CommandAsync("close", archive);
-    Assert(!failed.Success && failed.ErrorCode == "close-failed" && Directory.Exists(opened.MountPath) && File.Exists(Path.Combine(opened.MountPath!, ".cfs-mount-session")), "invalid archive was cleaned before validation");
-    File.WriteAllBytes(archive, validBytes);
-    Assert((await broker.CommandAsync("close", archive)).Success, "close did not succeed after valid archive was restored");
+    Assert(!failed.Success && failed.ErrorCode == "close-failed" && Directory.Exists(opened.MountPath) && File.Exists(Path.Combine(opened.MountPath!, ".cfs-mount-session")), "validation failure was cleaned before validation completed");
+    Assert((await broker.CommandAsync("close", archive)).Success, "close did not succeed after the one-shot validation failure cleared");
     Assert((await broker.CommandAsync("shutdown", null)).Success, "validation test teardown failed");
 }
 
@@ -248,9 +247,9 @@ sealed class Workspace : IDisposable { public Workspace() { Root = Path.Combine(
 
 sealed class CloseBrokerHarness : IAsyncDisposable
 {
-    private readonly string _workspace; private readonly string _suffix = "Close-" + Guid.NewGuid().ToString("N"); private readonly int _commitFailures; private readonly bool _cleanupFailure;
+    private readonly string _workspace; private readonly string _suffix = "Close-" + Guid.NewGuid().ToString("N"); private readonly int _commitFailures; private readonly bool _cleanupFailure; private readonly bool _validationFailure;
     private readonly List<Process> _processes = []; private readonly HashSet<int> _apps = Process.GetProcessesByName("Cfs.App").Select(p => p.Id).ToHashSet(); private Process? _owner; private readonly HashSet<string> _mounts = new(StringComparer.OrdinalIgnoreCase);
-    public CloseBrokerHarness(string workspace, int commitFailures = 0, bool cleanupFailure = false) { _workspace = workspace; _commitFailures = commitFailures; _cleanupFailure = cleanupFailure; }
+    public CloseBrokerHarness(string workspace, int commitFailures = 0, bool cleanupFailure = false, bool validationFailure = false) { _workspace = workspace; _commitFailures = commitFailures; _cleanupFailure = cleanupFailure; _validationFailure = validationFailure; }
     public bool OwnerRunning => _owner is { HasExited: false }; public bool NewCfsAppLaunched => Process.GetProcessesByName("Cfs.App").Any(p => !_apps.Contains(p.Id));
     public async Task<BrokerResponse> CommandAsync(string command, string? archive)
     {
@@ -260,7 +259,7 @@ sealed class CloseBrokerHarness : IAsyncDisposable
         if (response.MountPath is not null) _mounts.Add(response.MountPath);
         return response;
     }
-    public async Task<BrokerResponse> WaitCleanAsync(string archive, long minimum)
+    public async Task<BrokerResponse> WaitCleanAsync(string archive, ulong minimum)
     {
         var deadline = DateTime.UtcNow.AddSeconds(20); BrokerResponse? last = null;
         while (DateTime.UtcNow < deadline) { last = await CommandAsync("status", archive); if (last.PersistenceState == "Clean" && !last.IsDirty && last.CommittedGeneration >= minimum) return last; await Task.Delay(50); }
@@ -278,6 +277,7 @@ sealed class CloseBrokerHarness : IAsyncDisposable
         info.ArgumentList.Add(command); if (archive is not null) info.ArgumentList.Add(archive); info.ArgumentList.Add("--response-file"); info.ArgumentList.Add(response);
         info.Environment["CFS_BROKER_INSTANCE_SUFFIX"] = _suffix; info.Environment["CFS_BROKER_ALLOW_SHUTDOWN"] = "1"; info.Environment["CFS_BROKER_DISABLE_EXPLORER"] = "1"; info.Environment["CFS_BROKER_TEST_LOG_DIRECTORY"] = Path.Combine(_workspace, "logs");
         info.Environment["CFS_BROKER_TEST_QUIET_PERIOD_MS"] = "100"; info.Environment["CFS_BROKER_TEST_COMMIT_FAILURE_COUNT"] = _commitFailures.ToString(); if (_cleanupFailure) info.Environment["CFS_BROKER_TEST_CLEANUP_FAILURE"] = "1";
+        if (_validationFailure) info.Environment["CFS_BROKER_TEST_CLOSE_VALIDATION_FAILURE_COUNT"] = "1";
         info.Environment["DOTNET_ROOT"] = @"C:\Program Files\dotnet"; info.Environment.Remove("MSBuildSDKsPath"); var process = Process.Start(info)!; _processes.Add(process); return process;
     }
     private static async Task<BrokerResponse> ReadResponse(string path) { var deadline = DateTime.UtcNow.AddSeconds(15); while (DateTime.UtcNow < deadline) { try { if (File.Exists(path)) { var response = JsonSerializer.Deserialize<BrokerResponse>(await File.ReadAllTextAsync(path), new JsonSerializerOptions(JsonSerializerDefaults.Web)); if (response is not null) return response; } } catch (IOException) { } catch (JsonException) { } await Task.Delay(40); } throw new TimeoutException("response missing: " + path); }

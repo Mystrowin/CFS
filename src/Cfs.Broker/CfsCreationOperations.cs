@@ -129,7 +129,7 @@ public sealed class CfsCreationOperations
 {
     private readonly Func<ICfsProgressSurface> _progressFactory;
     private readonly TimeSpan _progressDelay;
-    private readonly Action<string, string, CancellationToken> _archiveCreator;
+    private readonly Action<string, string, CancellationToken>? _archiveCreator;
 
     public CfsCreationOperations(Func<ICfsProgressSurface> progressFactory, TimeSpan? progressDelay = null,
         Action<string, string, CancellationToken>? archiveCreator = null)
@@ -137,37 +137,54 @@ public sealed class CfsCreationOperations
         _progressFactory = progressFactory ?? throw new ArgumentNullException(nameof(progressFactory));
         _progressDelay = progressDelay ?? TimeSpan.FromMilliseconds(750);
         if (_progressDelay < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(progressDelay));
-        _archiveCreator = archiveCreator ?? ((source, target, token) => CfsArchive.CreateFromFolder(source, target, cancellationToken: token));
+        _archiveCreator = archiveCreator;
     }
 
     public string CreateEmpty(string targetPath)
     {
+        CfsWritableStoragePolicy.EnsureSupported(targetPath);
         var archive = CfsArchive.CreateEmpty(targetPath);
         CfsDiagnostics.Logger.WritePathEvent("broker.create-empty", archive.ArchivePath, "success");
         return archive.ArchivePath;
     }
 
-    public async Task<CfsCreationResult> CompressFolderAsync(string sourceFolder, CancellationToken cancellationToken = default)
+    public Task<CfsCreationResult> CompressFolderAsync(string sourceFolder, CancellationToken cancellationToken) =>
+        CompressFolderAsync(sourceFolder, progress: null, cancellationToken);
+
+    public async Task<CfsCreationResult> CompressFolderAsync(string sourceFolder, IProgress<CfsProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         // Root validation is intentionally fast. The Core creator owns the one
         // authoritative, non-following traversal after the progress timer starts.
         var source = CfsSourcePathSafety.ValidateFolderRoot(sourceFolder);
+        CfsWritableStoragePolicy.EnsureSupported(source);
         var parent = Directory.GetParent(source)?.FullName
             ?? throw new CfsArchiveException("A drive root cannot be compressed beside itself.");
         var baseName = Path.GetFileName(source);
         var workspace = CfsCompressionWorkspace.Create(parent);
         var temporaryArchive = workspace.ArchivePath;
         ICfsProgressSurface surface;
-        try { surface = _progressFactory() ?? throw new InvalidOperationException("The progress factory returned no surface."); }
+        if (progress is not null)
+        {
+            // The Explorer command client owns the structured progress window.
+            // Do not display a second broker-owned wait dialog.
+            surface = NoOpProgressSurface.Instance;
+        }
+        else try { surface = _progressFactory() ?? throw new InvalidOperationException("The progress factory returned no surface."); }
         catch (Exception progressFailure)
         {
             TryLogProgressFactoryFailure(progressFailure);
             surface = NoOpProgressSurface.Instance;
         }
-        await using var progress = new CfsDelayedProgressScope(surface, $"Compressing {baseName} to CFS…", _progressDelay);
+        await using var delayedSurface = new CfsDelayedProgressScope(surface, $"Compressing {baseName} to CFS…", _progressDelay);
         try
         {
-            await Task.Run(() => _archiveCreator(source, temporaryArchive, cancellationToken), cancellationToken).ConfigureAwait(false);
+            await Task.Run(() =>
+            {
+                if (_archiveCreator is not null)
+                    _archiveCreator(source, temporaryArchive, cancellationToken);
+                else
+                    CfsArchive.CreateFromFolder(source, temporaryArchive, progress, cancellationToken);
+            }, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
             string? committedArchive = null;
             for (var suffix = 1; suffix < int.MaxValue; suffix++)
@@ -206,6 +223,61 @@ public sealed class CfsCreationOperations
         }
     }
 
+    /// <summary>Extracts a validated archive to a newly created sibling folder without overwriting existing user files.</summary>
+    public async Task<CfsExtractionResult> ExtractArchiveAsync(string archivePath, IProgress<CfsProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        var identity = CfsArchiveIdentity.Create(archivePath);
+        CfsWritableStoragePolicy.EnsureSupported(identity.FullPath);
+        var validation = CfsArchive.Validate(identity.FullPath, progress: null, cancellationToken: cancellationToken);
+        if (!validation.IsValid) throw new CfsArchiveException("CFS refused to extract an invalid archive: " + validation.Message);
+        var archive = CfsArchive.Load(identity.FullPath, cancellationToken: cancellationToken);
+        var parent = Path.GetDirectoryName(identity.FullPath) ?? throw new CfsArchiveException("The archive has no parent directory.");
+        var baseName = Path.GetFileNameWithoutExtension(identity.FullPath);
+        var workspace = Path.Combine(parent, ".cfs-extract-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+
+        string MoveToNewOutputFolder()
+        {
+            for (var suffix = 1; suffix < int.MaxValue; suffix++)
+            {
+                var name = suffix == 1 ? baseName + " extracted" : $"{baseName} extracted ({suffix})";
+                var candidate = Path.Combine(parent, name);
+                try
+                {
+                    Directory.Move(workspace, candidate);
+                    return candidate;
+                }
+                catch (IOException) when (Directory.Exists(candidate) || File.Exists(candidate)) { }
+            }
+            throw new CfsArchiveException("CFS could not allocate a collision-free extraction folder.");
+        }
+
+        try
+        {
+            await Task.Run(() => archive.ExtractAll(workspace, progress, cancellationToken), cancellationToken).ConfigureAwait(false);
+            var output = MoveToNewOutputFolder();
+            CfsDiagnostics.Logger.WritePathEvent("broker.extract", identity.FullPath, "success");
+            return new CfsExtractionResult(output);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            string partialOutput;
+            try { partialOutput = MoveToNewOutputFolder(); }
+            catch (Exception ex)
+            {
+                TryLogCleanupFailure(ex);
+                partialOutput = workspace;
+            }
+            throw new CfsPartialExtractionException(partialOutput);
+        }
+        catch
+        {
+            try { if (Directory.Exists(workspace)) Directory.Delete(workspace, recursive: true); }
+            catch (Exception ex) { TryLogCleanupFailure(ex); }
+            throw;
+        }
+    }
+
     private static void TryLogCleanupFailure(Exception cleanupFailure)
     {
         try { CfsDiagnostics.Logger.WriteException("broker.compress.cleanup", cleanupFailure); }
@@ -227,6 +299,18 @@ public sealed class CfsCreationOperations
 }
 
 public sealed record CfsCreationResult(string OutputPath, string? Warning = null);
+public sealed record CfsExtractionResult(string OutputPath);
+
+public sealed class CfsPartialExtractionException(string outputPath) : OperationCanceledException("CFS extraction was cancelled; already extracted files were preserved."),
+    IHasCfsOutputPath
+{
+    public string OutputPath { get; } = outputPath;
+}
+
+public interface IHasCfsOutputPath
+{
+    string OutputPath { get; }
+}
 
 public sealed class CfsCompressionWorkspace : IDisposable
 {

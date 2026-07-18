@@ -26,4 +26,52 @@ public static class CfsShellRegistration
         _ = BuildOpenCommand(commandClientExecutablePath);
         return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" close \"%1\"";
     }
+
+    public static string BuildExtractCommand(string commandClientExecutablePath)
+    {
+        _ = BuildOpenCommand(commandClientExecutablePath);
+        return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" extract \"%1\"";
+    }
+
+    public static string BuildCommitCommand(string commandClientExecutablePath)
+    {
+        _ = BuildOpenCommand(commandClientExecutablePath);
+        return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" commit \"%1\"";
+    }
+
+    public static string BuildDiscardCommand(string commandClientExecutablePath)
+    {
+        _ = BuildOpenCommand(commandClientExecutablePath);
+        return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" discard \"%1\"";
+    }
+
+    public static string BuildStatusCommand(string commandClientExecutablePath)
+    {
+        _ = BuildOpenCommand(commandClientExecutablePath);
+        return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" status \"%1\"";
+    }
+
+    public static string BuildRecoverCommand(string commandClientExecutablePath)
+    {
+        _ = BuildOpenCommand(commandClientExecutablePath);
+        return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" recover \"%1\"";
+    }
+
+    public static string BuildRecoveryStatusCommand(string commandClientExecutablePath)
+    {
+        _ = BuildOpenCommand(commandClientExecutablePath);
+        return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" recovery-status \"%1\"";
+    }
+
+    public static string BuildDiscardRecoveryCommand(string commandClientExecutablePath)
+    {
+        _ = BuildOpenCommand(commandClientExecutablePath);
+        return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" discard-recovery \"%1\"";
+    }
+
+    public static string BuildOpenReadOnlyCommand(string commandClientExecutablePath)
+    {
+        _ = BuildOpenCommand(commandClientExecutablePath);
+        return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" open-readonly \"%1\"";
+    }
 }

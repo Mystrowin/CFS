@@ -11,21 +11,29 @@ public sealed class CfsProjFsMount : IDisposable
     private const int HResultInsufficientBuffer = unchecked((int)0x8007007A);
     private const uint FileAttributeDirectory = 0x10;
     private const uint FileStateTombstone = 0x10;
+    private const uint FileStateDirtyPlaceholder = 0x04;
     private const uint NotifyPreDelete = 0x00000010;
     private const uint NotifyFileDeleted = 0x00000800;
     private const uint NotifyOpen = 0x00000002;
     private const uint NotifyNewFile = 0x00000004;
+    private const uint NotifyFileOverwritten = 0x00000008;
     private const uint NotifyRenamed = 0x00000080;
-    private const uint NotifyChangeMask = NotifyOpen | NotifyNewFile | NotifyPreDelete | NotifyFileDeleted | NotifyRenamed;
+    private const uint NotifyFileHandleClosedModified = 0x00000400;
+    private const uint NotifyPreConvertToFull = 0x00001000;
+    private const uint NotifyChangeMask = NotifyOpen | NotifyNewFile | NotifyFileOverwritten | NotifyPreDelete |
+        NotifyFileDeleted | NotifyRenamed | NotifyFileHandleClosedModified | NotifyPreConvertToFull;
     private readonly string _archivePath;
     private readonly ReaderWriterLockSlim _metadataLock = new();
     private Dictionary<string, CfsEntry> _entries;
     private Dictionary<string, List<string>> _children;
-    private readonly ConcurrentDictionary<string, Lazy<byte[]>> _hydrated = new(StringComparer.OrdinalIgnoreCase);
+    private readonly CfsBoundedHydrationCache _hydrated = new();
     private readonly ConcurrentQueue<CfsProjFsReadRequest> _readRequests = new();
     private readonly ConcurrentDictionary<Guid, int> _enumerations = new();
     private readonly ConcurrentDictionary<Guid, EnumerationSnapshot> _enumerationSnapshots = new();
     private readonly ConcurrentDictionary<string, byte> _deleted = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _hydrationSlots;
+    private int _activeHydrations;
+    private int _maximumObservedHydrations;
     private int _notificationCount;
     private readonly StartDirectoryEnumerationCallback _startEnumeration;
     private readonly EndDirectoryEnumerationCallback _endEnumeration;
@@ -41,6 +49,8 @@ public sealed class CfsProjFsMount : IDisposable
     {
         _archivePath = archivePath;
         RootPath = rootPath;
+        HydrationJobLimit = Math.Min(8, Math.Max(2, Environment.ProcessorCount));
+        _hydrationSlots = new SemaphoreSlim(HydrationJobLimit, HydrationJobLimit);
         (_entries, _children) = BuildMetadata(manifest);
         _startEnumeration = StartEnumeration;
         _endEnumeration = EndEnumeration;
@@ -52,9 +62,41 @@ public sealed class CfsProjFsMount : IDisposable
 
     public string RootPath { get; }
     public int HydratedFileCount => _hydrated.Count;
-    public IReadOnlyList<string> HydratedPaths => _hydrated.Keys.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray();
+    public IReadOnlyList<string> HydratedPaths => _hydrated.Keys;
+    public long HydrationCacheRetainedBytes => _hydrated.RetainedBytes;
+    public long HydrationCacheLimitBytes => _hydrated.ByteLimit;
+    public int HydrationCacheEntryLimit => _hydrated.EntryLimit;
     public IReadOnlyList<CfsProjFsReadRequest> ReadRequests => _readRequests.ToArray();
     public int NotificationCount => Volatile.Read(ref _notificationCount);
+    public int HydrationJobLimit { get; }
+    public int MaximumObservedConcurrentHydrations => Volatile.Read(ref _maximumObservedHydrations);
+    /// <summary>Raised for a ProjFS mutation notification; unlike FileSystemWatcher this is provider-owned.</summary>
+    public event EventHandler? MutationObserved;
+
+    /// <summary>
+    /// Metadata-only local-state probe used by the broker's throttled reconciliation path.
+    /// A tombstone or dirty placeholder represents a local change relative to the
+    /// provider's committed manifest. A Full item is deliberately not sufficient:
+    /// ordinary hydration/materialization can leave a committed file Full, and treating
+    /// that state as dirty creates an endless automatic-commit loop. Namespace and
+    /// metadata differences for full files are detected by CfsMountSession's bounded scan.
+    /// </summary>
+    public bool HasLocalMutations()
+    {
+        ThrowIfDisposed();
+        CfsEntry[] entries;
+        _metadataLock.EnterReadLock();
+        try { entries = _entries.Values.Select(Clone).ToArray(); }
+        finally { _metadataLock.ExitReadLock(); }
+        foreach (var entry in entries)
+        {
+            var path = Path.Combine(RootPath, entry.Path.Replace('/', Path.DirectorySeparatorChar));
+            var result = Native.PrjGetOnDiskFileState(path, out var state);
+            if (result < 0) continue; // A not-yet-materialized projected item has no local state.
+            if ((state & (FileStateDirtyPlaceholder | FileStateTombstone)) != 0) return true;
+        }
+        return false;
+    }
 
     /// <summary>Atomically replaces callback metadata after a validated append commit.</summary>
     public void RefreshManifest()
@@ -107,7 +149,11 @@ public sealed class CfsProjFsMount : IDisposable
             if (tombstones.Contains(Path.GetFullPath(filePath))) continue;
             if (Native.PrjGetOnDiskFileState(filePath, out var state) >= 0 && (state & FileStateTombstone) != 0)
                 continue;
-            _ = File.ReadAllBytes(filePath);
+            try { _ = File.ReadAllBytes(filePath); }
+            catch (IOException ex) when (CfsFileInUseException.IsSharingOrLockViolation(ex))
+            {
+                throw new CfsFileInUseException(relativePath, ex);
+            }
         }
     }
 
@@ -159,6 +205,7 @@ public sealed class CfsProjFsMount : IDisposable
         if (_startOptions != IntPtr.Zero) Marshal.FreeHGlobal(_startOptions);
         if (_notificationMapping != IntPtr.Zero) Marshal.FreeHGlobal(_notificationMapping);
         if (_notificationRoot != IntPtr.Zero) Marshal.FreeHGlobal(_notificationRoot);
+        _hydrationSlots.Dispose();
     }
 
     private void Start(bool markVirtualizationRoot)
@@ -181,7 +228,13 @@ public sealed class CfsProjFsMount : IDisposable
         _notificationRoot = Marshal.StringToHGlobalUni(string.Empty);
         Marshal.StructureToPtr(new Native.NotificationMapping { NotificationBitMask = NotifyChangeMask, NotificationRoot = _notificationRoot }, _notificationMapping, false);
         _startOptions = Marshal.AllocHGlobal(Marshal.SizeOf<Native.StartOptions>());
-        Marshal.StructureToPtr(new Native.StartOptions { NotificationMappings = _notificationMapping, NotificationMappingsCount = 1 }, _startOptions, false);
+        Marshal.StructureToPtr(new Native.StartOptions
+        {
+            NotificationMappings = _notificationMapping,
+            NotificationMappingsCount = 1,
+            PoolThreadCount = (uint)HydrationJobLimit,
+            ConcurrentThreadCount = (uint)HydrationJobLimit
+        }, _startOptions, false);
         ThrowOnFailure(Native.PrjStartVirtualizing(RootPath, ref callbacks, IntPtr.Zero, _startOptions, out _context), "start virtualization");
     }
 
@@ -281,7 +334,19 @@ public sealed class CfsProjFsMount : IDisposable
             finally { _metadataLock.ExitReadLock(); }
             if (entry is null || entry.Type != ArchiveEntryType.File) return HResultFileNotFound;
             _readRequests.Enqueue(new CfsProjFsReadRequest(path, byteOffset, length));
-            var bytes = _hydrated.GetOrAdd(path, _ => new Lazy<byte[]>(() => CfsArchive.ReadManifestEntry(_archivePath, entry), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+            _hydrationSlots.Wait();
+            var active = Interlocked.Increment(ref _activeHydrations);
+            UpdateMaximum(ref _maximumObservedHydrations, active);
+            byte[] bytes;
+            try
+            {
+                bytes = _hydrated.GetOrAdd(path, () => CfsArchive.ReadManifestEntry(_archivePath, entry));
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _activeHydrations);
+                _hydrationSlots.Release();
+            }
             var requestedBytes = GetRequestedBytes(bytes, byteOffset, length);
             if (requestedBytes.Length == 0) return S_OK;
             var buffer = Native.PrjAllocateAlignedBuffer(data.NamespaceVirtualizationContext, (nuint)requestedBytes.Length);
@@ -312,6 +377,8 @@ public sealed class CfsProjFsMount : IDisposable
                 var data = Marshal.PtrToStructure<Native.CallbackData>(callbackData);
                 _deleted.TryAdd(Normalize(Marshal.PtrToStringUni(data.FilePathName) ?? string.Empty), 0);
             }
+            if (notification is NotifyNewFile or NotifyFileOverwritten or NotifyRenamed or NotifyFileDeleted or NotifyFileHandleClosedModified or NotifyPreConvertToFull)
+                MutationObserved?.Invoke(this, EventArgs.Empty);
             return S_OK;
         }
         catch (Exception ex) { return Marshal.GetHRForException(ex); }
@@ -361,6 +428,13 @@ public sealed class CfsProjFsMount : IDisposable
         return bytes.AsSpan(checked((int)byteOffset), count).ToArray();
     }
     private static string Normalize(string path) => path.Replace('\\', '/').Trim('/');
+
+    private static void UpdateMaximum(ref int target, int value)
+    {
+        int current;
+        while ((current = Volatile.Read(ref target)) < value
+            && Interlocked.CompareExchange(ref target, value, current) != current) { }
+    }
     private static void ThrowOnFailure(int result, string action) { if (result < 0) Marshal.ThrowExceptionForHR(result, new IntPtr(-1)); }
     private void ThrowIfDisposed() { if (_disposed) throw new ObjectDisposedException(nameof(CfsProjFsMount)); }
 

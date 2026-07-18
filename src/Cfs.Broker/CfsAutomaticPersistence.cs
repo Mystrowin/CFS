@@ -15,10 +15,11 @@ public enum CfsPersistenceState
 public sealed record CfsPersistenceStatus(
     CfsPersistenceState State,
     bool IsDirty,
-    long DirtyGeneration,
-    long CommittedGeneration,
+    ulong DirtyGeneration,
+    ulong CommittedGeneration,
     DateTimeOffset? LastCommitUtc,
-    string? LastError);
+    string? LastError,
+    ulong MutationSequence = 0);
 
 /// <summary>
 /// Debounces filesystem changes and serializes transactional commit attempts. A failed
@@ -35,8 +36,9 @@ public sealed class CfsAutomaticPersistence : IAsyncDisposable
     private readonly TimeSpan _quietPeriod;
     private readonly CancellationTokenSource _stop = new();
     private Task? _worker;
-    private long _dirtyGeneration;
-    private long _committedGeneration;
+    private ulong _mutationSequence;
+    private ulong _dirtyGeneration;
+    private ulong _committedGeneration;
     private CfsPersistenceState _state = CfsPersistenceState.Clean;
     private DateTimeOffset? _lastCommitUtc;
     private string? _lastError;
@@ -46,13 +48,21 @@ public sealed class CfsAutomaticPersistence : IAsyncDisposable
         Func<CancellationToken, Task> commit,
         TimeSpan quietPeriod,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        Func<DateTimeOffset>? utcNow = null)
+        Func<DateTimeOffset>? utcNow = null,
+        ulong initialMutationSequence = 0,
+        ulong initialDirtyGeneration = 0,
+        ulong initialCommittedGeneration = 0)
     {
         _commit = commit ?? throw new ArgumentNullException(nameof(commit));
         if (quietPeriod <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(quietPeriod));
         _quietPeriod = quietPeriod;
         _delay = delay ?? Task.Delay;
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        if (initialCommittedGeneration > initialDirtyGeneration || initialDirtyGeneration > initialMutationSequence)
+            throw new ArgumentException("Initial CFS generations are inconsistent.");
+        _mutationSequence = initialMutationSequence;
+        _dirtyGeneration = initialDirtyGeneration;
+        _committedGeneration = initialCommittedGeneration;
     }
 
     public CfsPersistenceStatus Status
@@ -61,16 +71,20 @@ public sealed class CfsAutomaticPersistence : IAsyncDisposable
         {
             lock (_sync)
                 return new(_state, _dirtyGeneration > _committedGeneration, _dirtyGeneration,
-                    _committedGeneration, _lastCommitUtc, _lastError);
+                    _committedGeneration, _lastCommitUtc, _lastError, _mutationSequence);
         }
     }
 
-    public long MarkDirty()
+    public ulong MarkDirty()
     {
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            var generation = ++_dirtyGeneration;
+            if (_mutationSequence == ulong.MaxValue)
+                throw new BrokerRequestException(CfsBrokerErrorCodes.GenerationConflict,
+                    "The CFS mutation sequence is exhausted; no mutation was accepted.");
+            var generation = ++_mutationSequence;
+            _dirtyGeneration = generation;
             _state = CfsPersistenceState.Dirty;
             if (_worker is null || _worker.IsCompleted)
                 _worker = Task.Run(RunWorkerAsync);
@@ -80,7 +94,7 @@ public sealed class CfsAutomaticPersistence : IAsyncDisposable
 
     public async Task FlushAsync(CancellationToken cancellationToken = default)
     {
-        long target;
+        ulong target;
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -103,7 +117,7 @@ public sealed class CfsAutomaticPersistence : IAsyncDisposable
         {
             while (!_stop.IsCancellationRequested)
             {
-                long target;
+                ulong target;
                 lock (_sync)
                 {
                     target = _dirtyGeneration;
@@ -133,7 +147,7 @@ public sealed class CfsAutomaticPersistence : IAsyncDisposable
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
     }
 
-    private async Task CommitThroughAsync(long target, CancellationToken cancellationToken)
+    private async Task CommitThroughAsync(ulong target, CancellationToken cancellationToken)
     {
         await _commitGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -189,6 +203,38 @@ public sealed class CfsAutomaticPersistence : IAsyncDisposable
             catch (OperationCanceledException) { }
         }
         lock (_sync) _state = CfsPersistenceState.Stopped;
+        _stop.Dispose();
+        _commitGate.Dispose();
+    }
+
+    /// <summary>
+    /// Stops pending persistence only after an explicit user discard decision. This is
+    /// intentionally separate from DisposeAsync, whose safety contract never abandons
+    /// a dirty generation.
+    /// </summary>
+    public async Task DiscardAsync()
+    {
+        Task? worker;
+        lock (_sync)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _stop.Cancel();
+            worker = _worker;
+        }
+        if (worker is not null)
+        {
+            try { await worker.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+        }
+        await _commitGate.WaitAsync().ConfigureAwait(false);
+        _commitGate.Release();
+        lock (_sync)
+        {
+            _dirtyGeneration = _committedGeneration;
+            _lastError = null;
+            _state = CfsPersistenceState.Stopped;
+        }
         _stop.Dispose();
         _commitGate.Dispose();
     }

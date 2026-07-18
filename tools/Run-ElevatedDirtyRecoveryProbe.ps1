@@ -140,7 +140,7 @@ try {
     $reopen = Invoke-BrokerRaw @('open', $archive) 'reopen'
     $result.reopen = $reopen
     $result.recoveryErrorCode = $reopen.ErrorCode
-    $result.recoveryDetected = (-not $reopen.Success -and $reopen.ErrorCode -eq 'recovery-needed')
+    $result.recoveryDetected = (-not $reopen.Success -and $reopen.ErrorCode -eq 'CFS_E_RECOVERY_REQUIRED')
     $result.recoveryDataPreservedBeforeCleanup = (Test-Path -LiteralPath $pendingFile) -or (Test-Path -LiteralPath "$probeMount.cfs-session.json")
     $result.archiveSha256AfterReopen = Get-Sha256 $archive
     $result.lastValidArchivePreserved = ($result.baselineArchiveSha256 -eq $result.archiveSha256AfterReopen)

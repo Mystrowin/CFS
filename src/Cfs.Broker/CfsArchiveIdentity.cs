@@ -46,19 +46,40 @@ public sealed record CfsArchiveIdentity(
         var info = new FileInfo(fullPath);
         var headerFingerprint = ReadHeaderFingerprint(fullPath);
         var native = TryGetNativeIdentity(fullPath);
-        // Volume serial plus file ID survives path aliases and moves. The canonical-path
-        // fallback is paired with a bounded header fingerprint so a replacement at the
-        // same path cannot silently reuse a writable session.
-        var key = native is { } value
-            ? $"ntfs:{value.VolumeSerialNumber:x8}:{value.FileId:x16}"
-            : $"path:{fullPath.ToUpperInvariant()}:{headerFingerprint}";
+        // The broker session key is path-stable: CFS's own atomic replacement changes
+        // the destination file ID, but must not strand the live session or make status
+        // lookups report a new clean 0/0 session. File identity remains separately
+        // recorded and is compared by RepresentsSameFile before a writable commit.
+        var key = $"path:{fullPath.ToUpperInvariant()}";
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key.ToUpperInvariant()))).ToLowerInvariant();
         return new CfsArchiveIdentity(fullPath, key, hash[..32], native?.VolumeSerialNumber, native?.FileId,
             info.Length, new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero), headerFingerprint);
     }
 
-    public bool RepresentsSameFile(CfsArchiveIdentity other) =>
-        other is not null && StringComparer.OrdinalIgnoreCase.Equals(Key, other.Key);
+    public bool RepresentsSameFile(CfsArchiveIdentity other)
+    {
+        if (other is null || !StringComparer.OrdinalIgnoreCase.Equals(FullPath, other.FullPath)) return false;
+        if (VolumeSerialNumber is { } volume && FileId is { } fileId
+            && other.VolumeSerialNumber is { } otherVolume && other.FileId is { } otherFileId)
+            return volume == otherVolume && fileId == otherFileId;
+        return FileSize == other.FileSize
+            && LastWriteTimeUtc == other.LastWriteTimeUtc
+            && StringComparer.OrdinalIgnoreCase.Equals(HeaderFingerprint, other.HeaderFingerprint);
+    }
+
+    public bool MatchesAuthoritativeState(CfsArchiveIdentity other)
+    {
+        if (!RepresentsSameFile(other)) return false;
+
+        // A stable Windows file ID proves that this is the same filesystem object,
+        // but it does not prove that another process did not modify that object in
+        // place. Size, timestamp, and the CFS header fingerprint are conflict
+        // signals. CFS refreshes all of them only after its own replacement has
+        // succeeded and the destination has been reopened and validated.
+        return FileSize == other.FileSize
+            && LastWriteTimeUtc == other.LastWriteTimeUtc
+            && StringComparer.OrdinalIgnoreCase.Equals(HeaderFingerprint, other.HeaderFingerprint);
+    }
 
     private static string ReadHeaderFingerprint(string path)
     {

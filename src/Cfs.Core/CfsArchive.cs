@@ -10,6 +10,10 @@ public sealed class CfsArchive
     public const string CompressionLzma2 = "lzma2-7zip-sdk-26.02";
     public const string CompressionLzma2RawV2 = "lzma2-raw-v2";
     public const string CompressionNone = "none";
+    public const int MaximumManifestBytes = 64 * 1024 * 1024;
+    public const int MaximumEntryCount = 1_000_000;
+    public const long MaximumEntryUncompressedBytes = 2L * 1024 * 1024 * 1024 - 1;
+    public const long MaximumTotalUncompressedBytes = 16L * 1024 * 1024 * 1024 * 1024;
 
     private const int HeaderLength = 24;
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("CFS1");
@@ -84,7 +88,7 @@ public sealed class CfsArchive
             files[normalized] = FileRecord.New(File.ReadAllBytes(file), File.GetLastWriteTimeUtc(file));
             AddParentDirectories(normalized, directories);
             completedItems++;
-            completedBytes += files[normalized].Bytes.Length;
+            completedBytes += files[normalized].OriginalSize;
             CfsProgressReporter.Report(progress, "Creating archive", "Compressing files", normalized, completedItems, sourceFiles.Count, completedBytes, totalBytes);
         }
 
@@ -107,7 +111,16 @@ public sealed class CfsArchive
         var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var orderedEntries = manifest.Entries.OrderBy(e => e.Path, StringComparer.OrdinalIgnoreCase).ToList();
-        var totalBytes = orderedEntries.Where(e => e.Type == ArchiveEntryType.File).Sum(e => e.OriginalSize);
+        long totalBytes = 0;
+        foreach (var entry in orderedEntries.Where(e => e.Type == ArchiveEntryType.File))
+        {
+            if (entry.OriginalSize < 0 || entry.OriginalSize > MaximumEntryUncompressedBytes)
+                throw new CfsArchiveException($"Archive entry '{entry.Path}' exceeds the {MaximumEntryUncompressedBytes} byte safety limit.");
+            try { totalBytes = checked(totalBytes + entry.OriginalSize); }
+            catch (OverflowException) { throw new CfsArchiveException("Archive total uncompressed size overflowed its safety limit."); }
+            if (totalBytes > MaximumTotalUncompressedBytes)
+                throw new CfsArchiveException($"Archive total uncompressed size exceeds the {MaximumTotalUncompressedBytes} byte safety limit.");
+        }
         long completedItems = 0, completedBytes = 0;
         CfsProgressReporter.Report(progress, "Opening archive", "Reading archive metadata", null, 0, orderedEntries.Count, 0, totalBytes);
         foreach (var entry in orderedEntries)
@@ -116,7 +129,8 @@ public sealed class CfsArchive
             var normalized = NormalizeEntryPath(entry.Path);
             if (entry.Type == ArchiveEntryType.Directory)
             {
-                directories.Add(normalized);
+                if (files.ContainsKey(normalized) || !directories.Add(normalized))
+                    throw new CfsArchiveException($"Archive manifest contains a duplicate or conflicting path '{normalized}'.");
                 completedItems++;
                 CfsProgressReporter.Report(progress, "Opening archive", "Validating manifest", normalized, completedItems, orderedEntries.Count, completedBytes, totalBytes);
                 continue;
@@ -127,12 +141,13 @@ public sealed class CfsArchive
                 throw new CfsArchiveException($"Unsupported entry type for {entry.Path}.");
             }
 
-            var bytes = ReadFileBytes(stream, entry);
-            files[normalized] = FileRecord.FromEntry(bytes, entry);
+            if (directories.Contains(normalized) || files.ContainsKey(normalized))
+                throw new CfsArchiveException($"Archive manifest contains a duplicate or conflicting path '{normalized}'.");
+            files.Add(normalized, FileRecord.FromEntry(entry));
             AddParentDirectories(normalized, directories);
             completedItems++;
             completedBytes += entry.OriginalSize;
-            CfsProgressReporter.Report(progress, "Opening archive", "Reading archive entries", normalized, completedItems, orderedEntries.Count, completedBytes, totalBytes);
+            CfsProgressReporter.Report(progress, "Opening archive", "Reading archive metadata", normalized, completedItems, orderedEntries.Count, completedBytes, totalBytes);
         }
 
         return new CfsArchive(archivePath, files, directories);
@@ -186,13 +201,24 @@ public sealed class CfsArchive
         {
             var archive = Load(archivePath, progress, cancellationToken);
             var entries = archive.ListEntries();
+            foreach (var entry in entries.Where(entry => entry.Type == ArchiveEntryType.File))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                _ = archive.ReadFile(entry.Path);
+            }
             CfsDiagnostics.Logger.WritePathEvent("archive.validation", archivePath, "success");
+            var warnings = entries
+                .Where(entry => entry.Type == ArchiveEntryType.File && entry.OriginalSize > 0 && entry.CompressedSize > 0
+                    && entry.OriginalSize / (double)entry.CompressedSize >= 1000d)
+                .Select(entry => $"Entry '{entry.Path}' has a compression ratio of at least 1,000:1.")
+                .ToArray();
             return new CfsValidationResult
             {
                 IsValid = true,
                 FileCount = entries.Count(entry => entry.Type == ArchiveEntryType.File),
                 DirectoryCount = entries.Count(entry => entry.Type == ArchiveEntryType.Directory),
-                Message = "Archive is valid."
+                Message = warnings.Length == 0 ? "Archive is valid." : "Archive is valid with compression-ratio warnings.",
+                Warnings = warnings
             };
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CfsArchiveException or InvalidDataException)
@@ -235,7 +261,7 @@ public sealed class CfsArchive
             throw new FileNotFoundException("File was not found in the CFS archive.", normalized);
         }
 
-        return record.Bytes.ToArray();
+        return ReadRecordBytes(entryPath, record).ToArray();
     }
 
     public void WriteFile(string entryPath, byte[] bytes)
@@ -367,7 +393,7 @@ public sealed class CfsArchive
     {
         Directory.CreateDirectory(outputFolder);
 
-        var totalBytes = _files.Values.Sum(file => (long)file.Bytes.Length);
+        var totalBytes = _files.Values.Sum(file => file.OriginalSize);
         long completedItems = 0, completedBytes = 0;
         foreach (var directory in _directories)
         {
@@ -384,15 +410,16 @@ public sealed class CfsArchive
                 Directory.CreateDirectory(directory);
             }
 
-            File.WriteAllBytes(outputPath, pair.Value.Bytes);
+            var bytes = ReadRecordBytes(pair.Key, pair.Value);
+            File.WriteAllBytes(outputPath, bytes);
             File.SetLastWriteTimeUtc(outputPath, pair.Value.LastWriteTimeUtc);
             completedItems++;
-            completedBytes += pair.Value.Bytes.Length;
+            completedBytes += bytes.Length;
             CfsProgressReporter.Report(progress, "Extracting archive", "Extracting files", pair.Key, completedItems, _files.Count, completedBytes, totalBytes);
         }
     }
 
-    public void ReplaceWithFolderSnapshot(string sourceFolder, string? excludedRootFileName = null, IProgress<CfsProgress>? progress = null, CancellationToken cancellationToken = default, IReadOnlySet<string>? excludedEntryPaths = null)
+    public bool ReplaceWithFolderSnapshot(string sourceFolder, string? excludedRootFileName = null, IProgress<CfsProgress>? progress = null, CancellationToken cancellationToken = default, IReadOnlySet<string>? excludedEntryPaths = null, bool persist = true)
     {
         if (!Directory.Exists(sourceFolder))
         {
@@ -407,6 +434,7 @@ public sealed class CfsArchive
         {
             var normalized = NormalizeEntryPath(Path.GetRelativePath(root, directory));
             if (excludedEntryPaths?.Contains(normalized) == true) continue;
+            EnsureMountedEntryIsSupported(new DirectoryInfo(directory), normalized, isDirectory: true);
             nextDirectories.Add(normalized);
             AddParentDirectories(normalized, nextDirectories);
         }
@@ -424,8 +452,10 @@ public sealed class CfsArchive
                 continue;
             }
             if (excludedEntryPaths?.Contains(normalized) == true) continue;
+            EnsureMountedEntryIsSupported(new FileInfo(file), normalized, isDirectory: false);
 
-            var bytes = File.ReadAllBytes(file);
+            var snapshot = ReadConsistentSnapshot(file, normalized, cancellationToken);
+            var bytes = snapshot.Bytes;
             var hash = ComputeSha256(bytes);
 
             if (_files.TryGetValue(normalized, out var existing) &&
@@ -435,7 +465,7 @@ public sealed class CfsArchive
             }
             else
             {
-                nextFiles[normalized] = FileRecord.New(bytes, File.GetLastWriteTimeUtc(file));
+                nextFiles[normalized] = FileRecord.New(bytes, snapshot.LastWriteTimeUtc);
             }
 
             AddParentDirectories(normalized, nextDirectories);
@@ -446,6 +476,10 @@ public sealed class CfsArchive
 
         var previousFiles = new Dictionary<string, FileRecord>(_files, StringComparer.OrdinalIgnoreCase);
         var previousDirectories = new HashSet<string>(_directories, StringComparer.OrdinalIgnoreCase);
+        var namespaceChanged = !previousDirectories.SetEquals(nextDirectories)
+            || previousFiles.Count != nextFiles.Count
+            || previousFiles.Any(pair => !nextFiles.TryGetValue(pair.Key, out var current) || current != pair.Value);
+        if (!namespaceChanged) return false;
 
         try
         {
@@ -462,7 +496,8 @@ public sealed class CfsArchive
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            Save(progress, cancellationToken);
+            if (persist) Save(progress, cancellationToken);
+            return true;
         }
         catch
         {
@@ -480,6 +515,97 @@ public sealed class CfsArchive
 
             throw;
         }
+    }
+
+    private static (byte[] Bytes, DateTime LastWriteTimeUtc) ReadConsistentSnapshot(
+        string filePath,
+        string entryPath,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // FileShare.Read permits concurrent readers but rejects any existing or new
+            // writer for the entire snapshot read. CFS therefore never commits a buffer
+            // that can change underneath it and does not claim filesystem snapshot
+            // semantics that it does not implement.
+            using var stream = new FileStream(
+                filePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 1024 * 1024,
+                options: FileOptions.SequentialScan);
+            if (stream.Length < 0 || stream.Length > MaximumEntryUncompressedBytes)
+                throw new CfsArchiveException($"Archive entry '{entryPath}' exceeds the {MaximumEntryUncompressedBytes} byte safety limit.");
+
+            var bytes = new byte[checked((int)stream.Length)];
+            var offset = 0;
+            while (offset < bytes.Length)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var read = stream.Read(bytes, offset, bytes.Length - offset);
+                if (read == 0) throw new EndOfStreamException($"Mounted archive entry '{entryPath}' changed length while being read.");
+                offset += read;
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            return (bytes, File.GetLastWriteTimeUtc(filePath));
+        }
+        catch (IOException ex) when (CfsFileInUseException.IsSharingOrLockViolation(ex))
+        {
+            throw new CfsFileInUseException(entryPath, ex);
+        }
+    }
+
+    private void EnsureMountedEntryIsSupported(FileSystemInfo entry, string normalizedPath, bool isDirectory)
+    {
+        var attributes = entry.Attributes;
+        if ((attributes & FileAttributes.SparseFile) != 0)
+            throw new CfsArchiveException($"CFS cannot commit sparse {DescribeEntry(isDirectory)} '{normalizedPath}'. Sparse-file semantics are not preserved.");
+        if ((attributes & FileAttributes.Device) != 0)
+            throw new CfsArchiveException($"CFS cannot commit device {DescribeEntry(isDirectory)} '{normalizedPath}'.");
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            // ProjFS itself represents known archive entries with reparse attributes.
+            // A newly introduced reparse point is an unsupported user object and must
+            // never be followed or silently represented in the archive.
+            var knownProjectedEntry = isDirectory ? _directories.Contains(normalizedPath) : _files.ContainsKey(normalizedPath);
+            if (!knownProjectedEntry)
+                throw new CfsArchiveException($"CFS cannot commit reparse-point {DescribeEntry(isDirectory)} '{normalizedPath}'. Links and junctions are not supported in CFS archives.");
+        }
+    }
+
+    private static string DescribeEntry(bool isDirectory) => isDirectory ? "directory" : "file";
+
+    /// <summary>
+    /// Writes this in-memory archive state to a new same-volume candidate and proves that
+    /// candidate can be reopened. This method deliberately never replaces <see cref="ArchivePath"/>.
+    /// The broker owns the later backup/replacement transaction.
+    /// </summary>
+    public void WriteValidatedCandidate(string candidatePath, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidatePath);
+        var fullCandidate = Path.GetFullPath(candidatePath);
+        if (string.Equals(fullCandidate, Path.GetFullPath(ArchivePath), StringComparison.OrdinalIgnoreCase))
+            throw new CfsArchiveException("A CFS commit candidate must not be the authoritative archive.");
+        if (File.Exists(fullCandidate))
+            throw new CfsArchiveException("Refusing to overwrite an existing CFS commit candidate.");
+
+        cancellationToken.ThrowIfCancellationRequested();
+        // Start the candidate as a byte-for-byte copy of the authoritative archive,
+        // then append only dirty blocks and a new manifest. This keeps unchanged entry
+        // offsets stable while preserving the broker's separate atomic replacement step.
+        if (File.Exists(ArchivePath))
+        {
+            File.Copy(ArchivePath, fullCandidate, overwrite: false);
+            AppendCurrentManifest(progress: null, cancellationToken: cancellationToken, outputPath: fullCandidate);
+        }
+        else
+        {
+            WriteArchive(fullCandidate, _files, _directories);
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!Validate(fullCandidate, cancellationToken: cancellationToken).IsValid)
+            throw new CfsArchiveException("The CFS commit candidate failed validation.");
     }
 
     public void Save(IProgress<CfsProgress>? progress = null, CancellationToken cancellationToken = default)
@@ -509,10 +635,8 @@ public sealed class CfsArchive
         {
             cancellationToken.ThrowIfCancellationRequested();
             WriteArchive(tempPath, _files, _directories);
-            using (File.OpenRead(tempPath))
-            {
-                _ = Load(tempPath);
-            }
+            if (!Validate(tempPath, cancellationToken: cancellationToken).IsValid)
+                throw new CfsArchiveException("The newly written CFS archive failed validation.");
 
             if (File.Exists(fullPath))
             {
@@ -541,24 +665,55 @@ public sealed class CfsArchive
             throw new ArgumentException("Path cannot be empty.", nameof(path));
         }
 
-        var replaced = path.Replace('\\', '/').Trim('/');
-        if (Path.IsPathRooted(replaced))
+        if (path.Length > 32_767)
+            throw new CfsArchiveException("Archive paths cannot exceed 32,767 UTF-16 code units.");
+        var replaced = path.Replace('\\', '/');
+        if (Path.IsPathRooted(replaced) || replaced.StartsWith('/'))
         {
             throw new CfsArchiveException("Archive paths must be relative.");
         }
 
-        var parts = replaced.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length == 0 || parts.Any(part => part == "." || part == ".."))
+        // Do not trim or remove empty components: aliases such as "a//b", leading
+        // separators, and trailing separators must be rejected rather than silently
+        // normalized into a different projected path.
+        var parts = replaced.Split('/');
+        if (parts.Length == 0 || parts.Length > 256
+            || parts.Any(part => part.Length == 0 || part == "." || part == ".."))
         {
-            throw new CfsArchiveException("Archive paths cannot contain '.' or '..'.");
+            throw new CfsArchiveException("Archive paths cannot contain empty, '.' or '..' components or exceed 256 levels.");
+        }
+
+        foreach (var part in parts)
+        {
+            if (part.Length > 255) throw new CfsArchiveException("Archive path segments cannot exceed 255 UTF-16 code units.");
+            if (part.Any(ch => char.IsControl(ch) || ch is '<' or '>' or '"' or '|' or '?' or '*'))
+                throw new CfsArchiveException("Archive paths contain characters that Windows cannot represent safely.");
+            for (var index = 0; index < part.Length; index++)
+            {
+                if (char.IsHighSurrogate(part[index]))
+                {
+                    if (index + 1 >= part.Length || !char.IsLowSurrogate(part[index + 1]))
+                        throw new CfsArchiveException("Archive paths cannot contain invalid Unicode.");
+                    index++;
+                }
+                else if (char.IsLowSurrogate(part[index]))
+                    throw new CfsArchiveException("Archive paths cannot contain invalid Unicode.");
+            }
+            if (part.IndexOf(':') >= 0) throw new CfsArchiveException("Archive paths cannot contain NTFS alternate data stream syntax.");
+            if (part.EndsWith(' ') || part.EndsWith('.')) throw new CfsArchiveException("Archive path segments cannot end with a space or period.");
+            var stem = Path.GetFileNameWithoutExtension(part);
+            if (stem.Equals("CON", StringComparison.OrdinalIgnoreCase) || stem.Equals("PRN", StringComparison.OrdinalIgnoreCase) ||
+                stem.Equals("AUX", StringComparison.OrdinalIgnoreCase) || stem.Equals("NUL", StringComparison.OrdinalIgnoreCase) ||
+                (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) && stem[3] is >= '1' and <= '9'))
+                throw new CfsArchiveException("Archive paths cannot use Windows reserved device names.");
         }
 
         return string.Join('/', parts);
     }
 
-    private void AppendCurrentManifest(IProgress<CfsProgress>? progress, CancellationToken cancellationToken)
+    private void AppendCurrentManifest(IProgress<CfsProgress>? progress, CancellationToken cancellationToken, string? outputPath = null)
     {
-        var fullPath = Path.GetFullPath(ArchivePath);
+        var fullPath = Path.GetFullPath(outputPath ?? ArchivePath);
         var oldHeader = new byte[HeaderLength];
 
         using (var stream = new FileStream(fullPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
@@ -570,15 +725,16 @@ public sealed class CfsArchive
                          .OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
                          .Where(item => item.Value.Dirty)
                          .ToList();
-            var totalDirtyBytes = dirtyFiles.Sum(item => (long)item.Value.Bytes.Length);
+            var totalDirtyBytes = dirtyFiles.Sum(item => item.Value.OriginalSize);
             long completedItems = 0, completedBytes = 0;
             foreach (var pair in dirtyFiles)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var record = pair.Value;
-                var method = record.Bytes.Length == 0 ? CompressionNone : CompressionLzma2RawV2;
+                var bytes = record.Bytes ?? throw new CfsArchiveException($"Dirty archive entry '{pair.Key}' has no staged content.");
+                var method = bytes.Length == 0 ? CompressionNone : CompressionLzma2RawV2;
                 var offset = stream.Position;
-                var compressedBytes = method == CompressionNone ? [] : Compress(record.Bytes);
+                var compressedBytes = method == CompressionNone ? [] : Compress(bytes);
                 stream.Write(compressedBytes);
 
                 _files[pair.Key] = record with
@@ -586,11 +742,11 @@ public sealed class CfsArchive
                     Offset = offset,
                     CompressedSize = compressedBytes.Length,
                     CompressionMethod = method,
-                    Sha256 = ComputeSha256(record.Bytes),
+                    Sha256 = ComputeSha256(bytes),
                     Dirty = false
                 };
                 completedItems++;
-                completedBytes += record.Bytes.Length;
+                completedBytes += bytes.Length;
                 CfsProgressReporter.Report(progress, "Saving changes", "Compressing changed files", pair.Key, completedItems, dirtyFiles.Count, completedBytes, totalDirtyBytes);
             }
 
@@ -607,7 +763,8 @@ public sealed class CfsArchive
 
         try
         {
-            _ = Load(fullPath);
+            if (!Validate(fullPath, cancellationToken: cancellationToken).IsValid)
+                throw new CfsArchiveException("The updated CFS archive failed validation.");
         }
         catch
         {
@@ -627,7 +784,7 @@ public sealed class CfsArchive
         foreach (var pair in files.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase).ToList())
         {
             var record = pair.Value;
-            var bytes = record.Bytes;
+            var bytes = record.Bytes ?? throw new CfsArchiveException($"New archive entry '{pair.Key}' has no staged content.");
             var method = bytes.Length == 0 ? CompressionNone : CompressionLzma2RawV2;
             var offset = stream.Position;
             var compressedBytes = method == CompressionNone ? [] : Compress(bytes);
@@ -684,7 +841,7 @@ public sealed class CfsArchive
         {
             Path = path,
             Type = ArchiveEntryType.File,
-            OriginalSize = record.Bytes.Length,
+            OriginalSize = record.OriginalSize,
             CompressedSize = record.CompressedSize,
             Offset = record.Offset,
             CompressionMethod = record.CompressionMethod,
@@ -732,33 +889,123 @@ public sealed class CfsArchive
         stream.ReadExactly(longBuffer);
         var manifestLength = BitConverter.ToInt64(longBuffer);
 
-        if (manifestOffset < HeaderLength || manifestLength <= 0 || manifestOffset + manifestLength > stream.Length)
+        if (manifestOffset < HeaderLength || manifestLength <= 0 || manifestLength > MaximumManifestBytes
+            || manifestOffset > stream.Length - manifestLength)
         {
             throw new CfsArchiveException("Archive manifest location is invalid.");
         }
 
         stream.Position = manifestOffset;
-        var manifestBytes = new byte[manifestLength];
+        var manifestBytes = new byte[checked((int)manifestLength)];
         stream.ReadExactly(manifestBytes);
-        return JsonSerializer.Deserialize<CfsManifest>(manifestBytes, JsonOptions)
-               ?? throw new CfsArchiveException("Archive manifest could not be read.");
+        var manifest = JsonSerializer.Deserialize<CfsManifest>(manifestBytes, JsonOptions)
+            ?? throw new CfsArchiveException("Archive manifest could not be read.");
+        if (manifest.Entries is null || manifest.Entries.Count > MaximumEntryCount)
+            throw new CfsArchiveException($"Archive manifest exceeds the {MaximumEntryCount} entry safety limit.");
+        ValidateManifestStructure(manifest, manifestOffset);
+        return manifest;
+    }
+
+    private static void ValidateManifestStructure(CfsManifest manifest, long manifestOffset)
+    {
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var filePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var dataRanges = new List<(long Start, long End, string Path)>();
+        long totalProjectedBytes = 0;
+
+        foreach (var entry in manifest.Entries)
+        {
+            if (entry is null) throw new CfsArchiveException("Archive manifest contains an empty entry.");
+            var normalized = NormalizeEntryPath(entry.Path);
+            if (!string.Equals(normalized, entry.Path, StringComparison.Ordinal))
+                throw new CfsArchiveException($"Archive manifest path '{normalized}' is not canonical.");
+            if (!seenPaths.Add(normalized))
+                throw new CfsArchiveException($"Archive manifest contains a duplicate or conflicting path '{normalized}'.");
+
+            if (entry.Type == ArchiveEntryType.Directory)
+            {
+                if (entry.OriginalSize != 0 || entry.CompressedSize != 0 || entry.Offset != 0
+                    || !string.Equals(entry.CompressionMethod, CompressionNone, StringComparison.Ordinal))
+                    throw new CfsArchiveException($"Directory entry '{normalized}' contains file data.");
+                continue;
+            }
+            if (entry.Type != ArchiveEntryType.File)
+                throw new CfsArchiveException($"Unsupported entry type for '{normalized}'.");
+
+            filePaths.Add(normalized);
+            if (entry.OriginalSize < 0 || entry.OriginalSize > MaximumEntryUncompressedBytes
+                || entry.CompressedSize < 0 || entry.CompressedSize > MaximumEntryUncompressedBytes
+                || entry.Offset < HeaderLength
+                || entry.CompressedSize > manifestOffset
+                || entry.Offset > manifestOffset - entry.CompressedSize)
+                throw new CfsArchiveException($"Invalid data block for '{normalized}'.");
+            try { totalProjectedBytes = checked(totalProjectedBytes + entry.OriginalSize); }
+            catch (OverflowException) { throw new CfsArchiveException("Archive total projected size overflowed its safety limit."); }
+            if (totalProjectedBytes > MaximumTotalUncompressedBytes)
+                throw new CfsArchiveException($"Archive total projected size exceeds the {MaximumTotalUncompressedBytes} byte safety limit.");
+
+            if (entry.OriginalSize == 0)
+            {
+                if (entry.CompressedSize != 0 || !string.Equals(entry.CompressionMethod, CompressionNone, StringComparison.Ordinal))
+                    throw new CfsArchiveException($"Empty entry '{normalized}' has inconsistent compression metadata.");
+            }
+            else if (entry.CompressedSize <= 0
+                || entry.CompressionMethod is not (CompressionLzma2 or CompressionLzma2RawV2))
+                throw new CfsArchiveException($"Unsupported or inconsistent compression method for '{normalized}'.");
+
+            if (!IsSha256(entry.Sha256))
+                throw new CfsArchiveException($"Archive entry '{normalized}' has an invalid SHA-256 value.");
+            if (entry.CompressedSize > 0)
+                dataRanges.Add((entry.Offset, checked(entry.Offset + entry.CompressedSize), normalized));
+        }
+
+        foreach (var filePath in filePaths)
+        {
+            var separator = filePath.IndexOf('/');
+            while (separator >= 0)
+            {
+                if (filePaths.Contains(filePath[..separator]))
+                    throw new CfsArchiveException($"Archive manifest contains a file/directory ancestor conflict at '{filePath}'.");
+                separator = filePath.IndexOf('/', separator + 1);
+            }
+        }
+
+        long previousEnd = HeaderLength;
+        string? previousPath = null;
+        foreach (var range in dataRanges.OrderBy(range => range.Start).ThenBy(range => range.End))
+        {
+            if (range.Start < previousEnd)
+                throw new CfsArchiveException($"Archive data blocks for '{previousPath}' and '{range.Path}' overlap.");
+            previousEnd = range.End;
+            previousPath = range.Path;
+        }
+    }
+
+    private static bool IsSha256(string? value)
+    {
+        if (value is null || value.Length != 64) return false;
+        try { return Convert.FromHexString(value).Length == 32; }
+        catch (FormatException) { return false; }
     }
 
     private static byte[] ReadFileBytes(Stream stream, CfsEntry entry)
     {
-        if (entry.CompressedSize < 0 || entry.Offset < HeaderLength || entry.Offset + entry.CompressedSize > stream.Length)
+        if (entry.OriginalSize < 0 || entry.OriginalSize > MaximumEntryUncompressedBytes
+            || entry.CompressedSize < 0 || entry.CompressedSize > MaximumEntryUncompressedBytes
+            || entry.Offset < HeaderLength || entry.CompressedSize > stream.Length
+            || entry.Offset > stream.Length - entry.CompressedSize)
         {
             throw new CfsArchiveException($"Invalid data block for '{entry.Path}'.");
         }
 
         stream.Position = entry.Offset;
-        var compressed = new byte[entry.CompressedSize];
+        var compressed = new byte[checked((int)entry.CompressedSize)];
         stream.ReadExactly(compressed);
 
         var bytes = entry.CompressionMethod switch
         {
             CompressionNone => [],
-            CompressionLzma2 => Decompress(compressed),
+            CompressionLzma2 => Lzma2Compressor.Decompress(compressed, entry.OriginalSize),
             CompressionLzma2RawV2 => Lzma2Compressor.DecompressRaw(compressed, entry.OriginalSize),
             _ => throw new CfsArchiveException($"Unsupported compression method '{entry.CompressionMethod}'.")
         };
@@ -782,14 +1029,25 @@ public sealed class CfsArchive
         return Lzma2Compressor.Compress(bytes);
     }
 
-    private static byte[] Decompress(byte[] bytes)
-    {
-        return Lzma2Compressor.Decompress(bytes);
-    }
-
     private static string ComputeSha256(byte[] bytes)
     {
         return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
+
+    private byte[] ReadRecordBytes(string entryPath, FileRecord record)
+    {
+        if (record.Bytes is not null) return record.Bytes;
+        return ReadManifestEntry(ArchivePath, new CfsEntry
+        {
+            Path = entryPath,
+            Type = ArchiveEntryType.File,
+            OriginalSize = record.OriginalSize,
+            CompressedSize = record.CompressedSize,
+            Offset = record.Offset,
+            CompressionMethod = record.CompressionMethod,
+            Sha256 = record.Sha256,
+            LastWriteTimeUtc = record.LastWriteTimeUtc
+        });
     }
 
     private static void AddParentDirectories(string path, HashSet<string> directories)
@@ -833,7 +1091,8 @@ public sealed class CfsArchive
     }
 
     private sealed record FileRecord(
-        byte[] Bytes,
+        byte[]? Bytes,
+        long OriginalSize,
         DateTime LastWriteTimeUtc,
         long Offset,
         long CompressedSize,
@@ -845,6 +1104,7 @@ public sealed class CfsArchive
         {
             return new FileRecord(
                 bytes,
+                bytes.LongLength,
                 lastWriteTimeUtc,
                 Offset: 0,
                 CompressedSize: 0,
@@ -853,10 +1113,11 @@ public sealed class CfsArchive
                 Dirty: true);
         }
 
-        public static FileRecord FromEntry(byte[] bytes, CfsEntry entry)
+        public static FileRecord FromEntry(CfsEntry entry)
         {
             return new FileRecord(
-                bytes,
+                null,
+                entry.OriginalSize,
                 entry.LastWriteTimeUtc.UtcDateTime,
                 entry.Offset,
                 entry.CompressedSize,
