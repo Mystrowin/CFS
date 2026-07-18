@@ -147,7 +147,7 @@ function Get-DefaultValue([string]$RegistryPath) {
 
 function Test-CfsHandlerCommand([string]$Command) {
     if ([string]::IsNullOrWhiteSpace($Command)) { return $true }
-    return $Command -match '^"[^\"]*Cfs\.(App|Broker)\.exe"\s+(?:(?:open|close|compress)\s+)?"%1"$'
+    return $Command -match '^"[^\"]*Cfs\.(App|Broker|CommandClient)\.exe"\s+(?:(?:open|close|compress)\s+)?"%1"$'
 }
 
 function Assert-PreexistingAssociationIsSafe {
@@ -164,9 +164,9 @@ function Assert-PreexistingAssociationIsSafe {
         }
     }
     $close = Get-DefaultValue 'Registry::HKEY_CURRENT_USER\Software\Classes\CFS.Archive\shell\CFS.Close\command'
-    if ($close -and $close -notmatch '^"[^\"]*Cfs\.Broker\.exe"\s+close\s+"%1"$') { throw 'Refusing a foreign HKCU Close CFS command.' }
+    if ($close -and $close -notmatch '^"[^\"]*Cfs\.(Broker|CommandClient)\.exe"\s+close\s+"%1"$') { throw 'Refusing a foreign HKCU Close CFS command.' }
     $compress = Get-DefaultValue 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\CFS.Compress\command'
-    if ($compress -and $compress -notmatch '^"[^\"]*Cfs\.Broker\.exe"\s+compress\s+"%1"$') { throw 'Refusing a foreign HKCU Compress command.' }
+    if ($compress -and $compress -notmatch '^"[^\"]*Cfs\.(Broker|CommandClient)\.exe"\s+compress\s+"%1"$') { throw 'Refusing a foreign HKCU Compress command.' }
 }
 
 function Export-Key([string]$HivePath, [string]$Name) {
@@ -269,9 +269,10 @@ try {
     $installed = $true
 
     $brokerPath = Join-Path $installPath 'Cfs.Broker.exe'
-    $expectedOpen = '"' + $brokerPath + '" open "%1"'
-    $expectedClose = '"' + $brokerPath + '" close "%1"'
-    $expectedCompress = '"' + $brokerPath + '" compress "%1"'
+    $commandClientPath = Join-Path $installPath 'Cfs.CommandClient.exe'
+    $expectedOpen = '"' + $commandClientPath + '" open "%1"'
+    $expectedClose = '"' + $commandClientPath + '" close "%1"'
+    $expectedCompress = '"' + $commandClientPath + '" compress "%1"'
     $expectedTemplate = Join-Path $installPath 'ShellNew\CFS-Empty.cfs'
     $result.effectiveOpen = Get-DefaultValue 'Registry::HKEY_CLASSES_ROOT\CFS.Archive\shell\open\command'
     $result.effectiveClose = Get-DefaultValue 'Registry::HKEY_CLASSES_ROOT\CFS.Archive\shell\CFS.Close\command'
@@ -385,6 +386,7 @@ if (-not ($evidence.replace.callSucceeded -and $evidence.replace.targetContent -
         throw "Ordinary writer failed (exit=$($capturedWriter.ExitCode)); replace=$($result.atomicReplacement); moveOverwrite=$($result.atomicMoveOverwrite); stderr=$($capturedWriter.Stderr)"
     }
 
+    Start-BoundedProcess $commandClientPath @('commit', $archive) | Out-Null
     Invoke-ShellClose $archive
     Wait-Until { -not (Test-Path -LiteralPath $mountPath) } 'Registered Close CFS did not remove the first mount.' 45
     $result.firstCloseRemovedMount = $true
