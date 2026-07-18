@@ -1,0 +1,8 @@
+name: CFS CodeQL configuration
+
+# Scan CFS-owned source while excluding bundled third-party libraries and build output.
+# The 7-Zip SDK under third_party/ is maintained upstream and is not modified here.
+paths-ignore:
+  - 'third_party/**'
+  - '**/bin/**'
+  - '**/obj/**'
