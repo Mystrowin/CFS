@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "version": "0.3.1",
+  "releaseLabel": "Beta",
+  "channel": "beta",
+  "architecture": "x64",
+  "publishedUtc": "2026-07-21T22:50:42Z",
+  "minimumWindowsBuild": 17763,
+  "setupUrl": "https://github.com/Mystrowin/CFS/releases/download/v0.3.1-beta/CFS-0.3.1-Beta-Setup.exe",
+  "sha256": "13059aab2ca1fc70af2891f6a23f3340d03458f3c5310aff53c647e7386ecd57",
+  "releaseNotesUrl": "https://github.com/Mystrowin/CFS/releases/tag/v0.3.1-beta",
+  "mandatory": false
+}

@@ -1,0 +1,12 @@
+Copyright © 2026 Neeraj Pragnya Krishna Vasagiri. All rights reserved.
+
+No permission is granted to copy, modify, distribute, sublicense, sell, reverse
+engineer, or create derivative works from CFS except under a separate written
+agreement from the copyright holder or as required by applicable law.
+
+Official unmodified release installers may be downloaded and run for personal
+evaluation of the CFS beta. This limited permission does not grant access to or
+rights in the private implementation source.
+
+Third-party components remain subject to their respective license terms. See
+packaging/THIRD-PARTY-NOTICES.txt and the notices installed with CFS.

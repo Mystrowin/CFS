@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>What Is CFS? Editable Compressed Archives for Windows</title>
+    <meta name="description" content="Learn how CFS mounts a .cfs compressed archive as a folder-like workspace in Windows Explorer, provides files on demand, and saves supported edits back into one archive.">
+    <meta name="author" content="Neeraj Pragnya Krishna Vasagiri">
+    <meta name="robots" content="index, follow, max-image-preview:large">
+    <link rel="canonical" href="https://mystrowin.github.io/CFS/what-is-cfs.html">
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="What Is CFS? Editable Compressed Archives for Windows">
+    <meta property="og:description" content="CFS mounts a compressed .cfs archive as a folder-like workspace in Windows Explorer with on-demand file access.">
+    <meta property="og:url" content="https://mystrowin.github.io/CFS/what-is-cfs.html">
+    <meta property="og:site_name" content="CFS">
+    <meta property="og:image" content="https://mystrowin.github.io/CFS/og.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="CFS compressed archives that open as folder-like workspaces in Windows">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="What Is CFS? Editable Compressed Archives for Windows">
+    <meta name="twitter:description" content="A technical overview of CFS, a Windows compressed-archive workspace using Projected File System.">
+    <meta name="twitter:image" content="https://mystrowin.github.io/CFS/og.png">
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "TechArticle",
+            "headline": "What Is CFS? Editable Compressed Archives for Windows",
+            "description": "A technical overview of CFS and its ProjFS-backed compressed archive workflow for Windows.",
+            "datePublished": "2026-07-17",
+            "dateModified": "2026-07-18",
+            "mainEntityOfPage": "https://mystrowin.github.io/CFS/what-is-cfs.html",
+            "author": {
+              "@type": "Person",
+              "name": "Neeraj Pragnya Krishna Vasagiri"
+            }
+          },
+          {
+            "@type": "FAQPage",
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "What is a CFS archive?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "A CFS archive is a single .cfs compressed file designed to open through CFS as a folder-like workspace in Windows Explorer."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Does CFS extract the whole archive before opening it?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "With Windows Projected File System available, CFS projects files into Explorer and supplies file contents on demand instead of extracting the entire archive first."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Can CFS save edits back into the archive?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "CFS supports a folder-style editing workflow and saves supported changes back into the .cfs archive when the workspace is saved and unmounted."
+                }
+              }
+            ]
+          }
+        ]
+      }
+    </script>
+    <link rel="stylesheet" href="styles.css">
+    <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cefcc54a364625b4ff0bf56c9099fd"}'></script><!-- End Cloudflare Web Analytics -->
+  </head>
+  <body>
+    <div class="site-shell">
+      <a class="skip-link" href="#main">Skip to main content</a>
+
+      <header class="site-header">
+        <a class="brand" href="./" aria-label="CFS home">
+          <span class="brand-mark" aria-hidden="true">CFS</span>
+          <span class="brand-copy"><strong>CFS</strong><small>Compressed File System</small></span>
+        </a>
+        <nav aria-label="Primary navigation">
+          <a href="#workflow">Workflow</a>
+          <a href="#differences">Why CFS</a>
+          <a href="#questions">Questions</a>
+          <a class="nav-download" href="./#download">Download</a>
+        </nav>
+      </header>
+
+      <main id="main">
+        <section class="hero" id="top">
+          <div class="hero-copy">
+            <div class="eyebrow-row">
+              <span class="status-dot" aria-hidden="true"></span><span>Technical overview</span>
+              <span class="eyebrow-divider" aria-hidden="true"></span><span>Windows x64 beta</span>
+            </div>
+            <h1>What is CFS?<span> A compressed archive that opens like a Windows folder.</span></h1>
+            <p class="hero-intro">CFS 0.3 is the current stable beta for working with a single <code>.cfs</code> compressed archive as a folder-like workspace in File Explorer. It uses Windows Projected File System for on-demand access and saves supported changes back into the archive.</p>
+            <div class="hero-actions">
+              <a class="primary-button" href="./#download"><span>Download CFS Beta</span><span aria-hidden="true">→</span></a>
+              <a class="text-link" href="https://github.com/Mystrowin/CFS">View the GitHub repository <span aria-hidden="true">↗</span></a>
+            </div>
+            <div class="hero-facts" role="list" aria-label="CFS summary"><span role="listitem">One .cfs file</span><span role="listitem">Explorer workflow</span><span role="listitem">LZMA2 blocks</span></div>
+          </div>
+
+          <div class="archive-visual" aria-hidden="true">
+            <div class="visual-grid"></div>
+            <div class="archive-card">
+              <div class="archive-label">WORKSPACE.CFS</div>
+              <div class="compression-lines"><span></span><span></span><span></span><span></span><span></span></div>
+              <div class="archive-ratio"><strong>LZMA2</strong><small>compressed blocks</small></div>
+            </div>
+            <div class="transfer-line"><span></span><span></span><span></span><span></span></div>
+            <div class="folder-card">
+              <div class="folder-tab"></div><div class="file-list"><span></span><span></span><span></span></div><div class="folder-caption">EXPLORER</div>
+            </div>
+            <div class="visual-caption">PROJECTED FILE ACCESS</div>
+          </div>
+        </section>
+
+        <aside class="beta-warning" aria-label="Important beta warning">
+          <span class="warning-icon" aria-hidden="true">!</span>
+          <div><strong>CFS 0.3.1 is the current stable beta.</strong><p>The newest Explorer-first release is available alongside the earlier 0.3.0, 0.2, and 0.1 installers.</p></div>
+          <a href="./#download">See every release</a>
+        </aside>
+
+        <section class="section" id="workflow">
+          <div class="section-heading"><span class="section-index">01</span><div><p class="kicker">How the workflow operates</p><h2>Open, use, save, and unmount.</h2></div></div>
+          <div class="steps-grid">
+            <article class="step-card"><span class="step-number">01</span><div class="step-glyph archive-glyph" aria-hidden="true"></div><h3>Open one archive</h3><p>CFS reads the selected <code>.cfs</code> archive and prepares a managed workspace for it.</p></article>
+            <article class="step-card"><span class="step-number">02</span><div class="step-glyph mount-glyph" aria-hidden="true"></div><h3>Browse in Explorer</h3><p>ProjFS presents the archive contents as files and folders. File data is supplied when Windows or an application requests it.</p></article>
+            <article class="step-card"><span class="step-number">03</span><div class="step-glyph save-glyph" aria-hidden="true"></div><h3>Save supported changes</h3><p>CFS validates and writes supported workspace changes back into the same archive before closing the mount.</p></article>
+          </div>
+        </section>
+
+        <section class="section" id="differences">
+          <div class="section-heading"><span class="section-index">02</span><div><p class="kicker">Why the project exists</p><h2>A folder-style workflow without abandoning compression.</h2></div></div>
+          <div class="steps-grid">
+            <article class="step-card"><span class="step-number">A</span><h3>One user-managed file</h3><p>The long-term product promise is that the user manages one compressed archive rather than a permanent extracted folder beside it.</p></article>
+            <article class="step-card"><span class="step-number">B</span><h3>On-demand file access</h3><p>Explorer mounting avoids requiring a complete up-front extraction when the ProjFS workflow is available.</p></article>
+            <article class="step-card"><span class="step-number">C</span><h3>Persistent workspace edits</h3><p>Supported file operations are preserved in the archive when the workspace is saved and reopened.</p></article>
+          </div>
+        </section>
+
+        <section class="split-section" id="requirements">
+          <div class="requirements-panel">
+            <p class="kicker">System requirements</p><h2>Designed for supported x64 Windows systems.</h2>
+            <ul class="check-list"><li><span aria-hidden="true">✓</span>Windows 11</li><li><span aria-hidden="true">✓</span>64-bit Windows</li><li><span aria-hidden="true">✓</span>Local NTFS storage for writable archives</li><li><span aria-hidden="true">✓</span>Windows Projected File System for mounted access</li></ul>
+          </div>
+          <div class="projfs-panel"><span class="feature-label">CURRENT RELEASE</span><h3>Start with CFS 0.3.1 Beta.</h3><p>CFS 0.3.1 adds app-free archive creation to the Explorer-first workflow. Earlier releases remain available from the download page.</p></div>
+        </section>
+
+        <section class="section" id="questions">
+          <div class="section-heading"><span class="section-index">03</span><div><p class="kicker">Common questions</p><h2>What testers should know first.</h2></div></div>
+          <div class="steps-grid">
+            <article class="step-card"><h3>Does CFS extract everything first?</h3><p>No. CFS uses ProjFS to project the directory structure and supplies file contents on demand. ProjFS is required for this Explorer workflow.</p></article>
+            <article class="step-card"><h3>Can files be edited?</h3><p>CFS provides a folder-style editing workflow. Supported changes are written back when the workspace is saved and unmounted.</p></article>
+            <article class="step-card"><h3>Is the beta free?</h3><p>The current setup installer is available at no charge from the public GitHub release page.</p></article>
+          </div>
+        </section>
+
+        <section class="section limitations-section">
+          <div class="limitations-copy"><p class="kicker">Continue exploring</p><h2>See the current release and measured limitations.</h2><p>The main CFS page contains beta downloads, version comparison, requirements, checksums, update behavior, and links to the complete limitation notes.</p><a class="text-link" href="./">Open the main CFS page <span aria-hidden="true">→</span></a></div>
+          <div class="support-card"><span class="support-label">HELP CFS GET TESTED</span><h3>Star the repository and try a beta.</h3><p>Public stars, technically useful feedback, reproducible tests, and independent write-ups make a new utility easier for other Windows users to discover and evaluate.</p><a class="secondary-button" href="https://github.com/Mystrowin/CFS">Open CFS on GitHub <span aria-hidden="true">↗</span></a></div>
+        </section>
+      </main>
+
+      <footer>
+        <div class="footer-brand"><span class="brand-mark small" aria-hidden="true">CFS</span><div><strong>CFS 0.3.1 Beta</strong><p>Explorer-first compressed archive software for Windows.</p></div></div>
+        <div class="footer-links"><a href="./">Main website</a><a href="https://github.com/Mystrowin/CFS">Project repository</a><a href="./#download">Downloads</a></div>
+        <p class="copyright">Copyright © 2026 Neeraj Pragnya Krishna Vasagiri. All rights reserved.</p>
+      </footer>
+    </div>
+  </body>
+</html>
