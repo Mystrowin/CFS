@@ -66,7 +66,7 @@ $compiledSetupPath = Join-Path $installerBuildDir $setupName
 $portableOutput = Join-Path $destinationFull $portableName
 $updatePath = Join-Path $destinationFull 'update.json'
 $checksumsPath = Join-Path $destinationFull 'SHA256SUMS.txt'
-$sbomPath = Join-Path $destinationFull 'CFS-$version-$label-sbom.cdx.json'
+$sbomPath = Join-Path $destinationFull "CFS-$version-$label-sbom.cdx.json"
 
 if (Test-Path -LiteralPath $sourceFolder -PathType Container) {
     # The copied LZMA source can carry read-only attributes. This exact
@@ -134,8 +134,15 @@ Get-ChildItem -LiteralPath (Join-Path $repoRoot 'tools') -Force |
 $websiteSource = Join-Path $repoRoot 'website'
 if (Test-Path -LiteralPath $websiteSource) {
     $websiteDestination = Join-Path $sourceFolder 'website'
-    & robocopy $websiteSource $websiteDestination /E /XD node_modules dist .vinext .wrangler .git coverage outputs work /XF '*.log' '*.tmp' '.env*' /NFL /NDL /NJH /NJS /NP
-    if ($LASTEXITCODE -gt 7) { throw "Website source copy failed with robocopy exit code $LASTEXITCODE." }
+    New-Item -ItemType Directory -Path $websiteDestination -Force | Out-Null
+    $websiteFiles = @('.gitignore', 'README.md', 'index.html', 'styles.css', 'script.js', 'og.png', 'robots.txt', 'sitemap.xml', 'what-is-cfs.html')
+    foreach ($websiteFile in $websiteFiles) {
+        $websiteInput = Join-Path $websiteSource $websiteFile
+        if (-not (Test-Path -LiteralPath $websiteInput -PathType Leaf)) {
+            throw "Required GitHub Pages source is missing: website\$websiteFile"
+        }
+        Copy-Item -LiteralPath $websiteInput -Destination (Join-Path $websiteDestination $websiteFile) -Force
+    }
 }
 
 # Formatting happens only in the publishable copy so the working tree remains untouched.

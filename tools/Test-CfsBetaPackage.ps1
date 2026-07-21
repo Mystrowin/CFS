@@ -34,7 +34,7 @@ $required = @(
     'docs/BETA-QUICK-START.md','docs/INSTALL-UNINSTALL.md','docs/DATA-SAFETY.md','docs/KNOWN-LIMITATIONS.md','docs/BUG-REPORT-TEMPLATE.md',
     "docs/CONTRIBUTOR-ACCESS-POLICY.md","docs/$releaseNotes",'docs/on-demand-mount.md','docs/compression.md','docs/PERFORMANCE-BASELINE.md',"docs/$performanceReport"
 )
-if (-not $legacyPackage) { $required += 'Cfs.Broker.exe' }
+if (-not $legacyPackage) { $required += @('Cfs.Broker.exe', 'Cfs.CommandClient.exe') }
 foreach ($relative in $required) { Check "required content: $relative" (Test-Path -LiteralPath (Join-Path $folder $relative) -PathType Leaf) }
 
 $files = @(Get-ChildItem -Recurse -File -LiteralPath $folder)
@@ -57,15 +57,18 @@ $associationScript = Join-Path $folder 'Register-CfsFileAssociation.ps1'
 $spaceRoot = Join-Path $env:TEMP ("CFS package path with spaces\" + [guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Path $spaceRoot -Force | Out-Null
-    $handlerName = if ($legacyPackage) { 'Cfs.App.exe' } else { 'Cfs.Broker.exe' }
+    $handlerName = if ($legacyPackage) { 'Cfs.App.exe' } else { 'Cfs.CommandClient.exe' }
     $spaceExe = Join-Path $spaceRoot $handlerName; Copy-Item -LiteralPath (Join-Path $folder $handlerName) -Destination $spaceExe
-    $dryRun = (& $associationScript -BrokerPath $spaceExe -DryRun) -join "`n"
+    $dryRun = (& $associationScript -CommandClientPath $spaceExe -EmptyTemplatePath (Join-Path $folder 'ShellNew\CFS-Empty.cfs') -DryRun) -join "`n"
     if ($legacyPackage) {
         Check 'association command quotes packaged executable path with spaces' ($dryRun -eq ('"' + $spaceExe + '" "%1"'))
     }
     else {
-        Check 'broker open command quotes packaged executable path with spaces' ($dryRun.Contains(('OPEN_COMMAND="' + $spaceExe + '" open "%1"')))
-        Check 'broker Compress and Close commands are packaged' ($dryRun.Contains(('FOLDER_VERB_COMMAND="' + $spaceExe + '" compress "%1"')) -and $dryRun.Contains(('CLOSE_VERB_COMMAND="' + $spaceExe + '" close "%1"')))
+        Check 'command-client open command quotes packaged executable path with spaces' ($dryRun.Contains(('OPEN_COMMAND="' + $spaceExe + '" open "%1"')))
+        Check 'command-client Compress and Close commands are packaged' ($dryRun.Contains(('FOLDER_VERB_COMMAND="' + $spaceExe + '" compress "%1"')) -and $dryRun.Contains(('CLOSE_VERB_COMMAND="' + $spaceExe + '" close "%1"')))
+        Check 'app-free create commands are packaged' (
+            $dryRun.Contains(('CREATE_HERE_VERB_COMMAND="' + $spaceExe + '" create-here "%V"')) -and
+            $dryRun.Contains(('CREATE_IN_FOLDER_VERB_COMMAND="' + $spaceExe + '" create-here "%1"')))
     }
     $unregisterDryRun = (& $associationScript -Unregister -DryRun) -join "`n"
     $unregisterIsScoped = if ($legacyPackage) {
@@ -73,7 +76,7 @@ try {
     }
     else {
         $unregisterDryRun.Contains('UNREGISTER=ownership-checked') -and
-        $unregisterDryRun.Contains(('OPEN_COMMAND="' + (Join-Path $folder 'Cfs.Broker.exe') + '" open "%1"'))
+        $unregisterDryRun.Contains(('OPEN_COMMAND="' + (Join-Path $folder 'Cfs.CommandClient.exe') + '" open "%1"'))
     }
     Check 'association removal is available and ownership-scoped' $unregisterIsScoped
 }
@@ -102,3 +105,4 @@ Write-Host "PACKAGE_FOLDER_BYTES=$totalBytes"
 Write-Host "PACKAGE_ZIP_BYTES=$((Get-Item -LiteralPath $zipFile).Length)"
 Write-Host "TOTAL_CHECKS=$($passes + $failures.Count) PASS=$passes FAIL=$($failures.Count)"
 if ($failures.Count -gt 0) { exit 1 }
+exit 0

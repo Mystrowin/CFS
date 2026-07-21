@@ -2,8 +2,8 @@
 
 This is the traditional static source for the public CFS download website,
 hosted exclusively on [GitHub Pages](https://mystrowin.github.io/CFS/).
-The current page highlights CFS 0.3.0 Beta and keeps the 0.1.0 Beta release
-available through archived GitHub release links.
+The current page highlights CFS 0.3.1 Beta and keeps the 0.3.0, 0.2.0, and
+0.1.0 Beta installers available through version-specific GitHub release links.
 
 ## Files
 

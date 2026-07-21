@@ -1,4 +1,4 @@
-# CFS 0.2.0 Beta contributor access policy
+# CFS 0.3.1 Beta contributor access policy
 
 Beta users may receive permanent access to the future paid version when they make a meaningful contribution to CFS.
 
@@ -23,4 +23,4 @@ Permanent access is not automatic for every report. It is awarded based on the u
 4. Only a written confirmation from the project owner grants permanent access.
 5. The owner maintains the award record manually for this beta.
 
-CFS 0.2.0 Beta does not include a licensing backend for this program. Submission, discussion, or acceptance of a report does not by itself grant access.
+CFS 0.3.1 Beta does not include a licensing backend for this program. Submission, discussion, or acceptance of a report does not by itself grant access.

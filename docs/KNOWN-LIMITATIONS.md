@@ -1,4 +1,4 @@
-# CFS 0.2.0 Beta known limitations
+# CFS 0.3.1 Beta known limitations
 
 - Experimental beta: not production-ready and not suitable as the only copy of any important file.
 - Windows-only, with x64 as the supported beta target.

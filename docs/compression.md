@@ -1,4 +1,4 @@
-# CFS 0.2.0 Beta compression method
+# CFS 0.3.1 Beta compression method
 
 The current prototype uses independent per-file LZMA2 compression through the official 7-Zip LZMA SDK 26.02 reduced `7zr.exe` tool.
 

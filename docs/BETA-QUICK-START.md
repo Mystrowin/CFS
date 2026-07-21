@@ -1,33 +1,34 @@
-# CFS 0.2.0 Beta quick start
+# CFS 0.3.1 Beta quick start
 
 ## Safety warning
 
-CFS is experimental beta software. Never use a `.cfs` archive as the only copy of important or irreplaceable files. Keep a separate backup of every stored file and use only non-critical test data.
+CFS 0.3.1 is the current stable beta. Keep an independent backup of important files while evaluating archive workflows.
 
 ## Supported Windows requirements
 
-- x64 Windows 10 version 1809 or newer, or Windows 11.
+- Windows 11 x64.
 - Windows Projected File System (`Client-ProjFS`) enabled for the default on-demand workflow.
 - Permission to run the extracted application and create temporary folders under the current user's temporary directory.
 
 If ProjFS is unavailable, CFS explains how to enable **Windows Projected File System** in Windows Features. It never silently falls back. **Compatibility Mode (Full Extraction)** is a separate, explicitly selected action.
 
-## Install or extract
+## Install
 
-1. Obtain the versioned `CFS-0.2.0-Beta-win-x64` ZIP from the project owner.
-2. Extract the entire ZIP to a normal folder; paths containing spaces are supported.
-3. Keep all packaged files together, including `Cfs.Broker.exe` and `ShellNew\CFS-Empty.cfs`.
+1. Download `CFS-0.3.1-Beta-Setup.exe` from the public GitHub release.
+2. Run setup and approve the Windows administrator prompt.
+3. Leave **Windows Projected File System** selected when setup offers to enable it.
 
 See [Installation and uninstall](INSTALL-UNINSTALL.md) for file association and removal.
 
-## First launch
-
-Read the beta safety warning before using the management application. The acknowledgement applies to CFS 0.2.0 Beta and is requested again after a beta-version change.
-
 ## Create or open an archive
 
-- Use Explorer **New → CFS Compressed Folder** for an empty archive, or **Compress to CFS** on a folder.
+- Right-click empty space in an Explorer folder, choose **Show more options → Create empty CFS archive here**, name the archive, and CFS opens it in Explorer.
+- Right-click a folder and choose **Create empty CFS archive inside** to create an empty archive in that folder.
+- Explorer **New → CFS Compressed Folder** remains available for the normal Windows New-file workflow.
+- Right-click a populated folder and choose **Compress to CFS** to turn that folder into an archive.
 - Double-clicking an existing `.cfs` invokes the silent per-user broker and opens/reuses its Explorer folder.
+
+None of these workflows launches or requires `Cfs.App`.
 
 ## Mount and browse
 
@@ -40,21 +41,17 @@ If you explicitly select **Compatibility Mode (Full Extraction)** and confirm it
 
 The beta supports creating, overwriting, renaming, moving, and deleting files; creating folders; and deleting empty folders. Application compatibility is not universal, so test the editor you intend to use.
 
-The broker commits normal Explorer changes after a bounded quiet period. Use **Close CFS** to force a flush, validate, and safely unmount the one selected archive.
+The broker commits normal Explorer changes after a bounded quiet period. Right-click the archive and choose **Close CFS** to commit or discard pending changes and safely unmount it.
 
 ## Unmount and reopen
 
-Select **Unmount**, agree to save, and wait for cleanup. Reopen the same `.cfs` and verify the intended changes. If cleanup fails, CFS preserves and reports the exact mount path; follow [Data-safety guidance](DATA-SAFETY.md).
-
-## Validate
-
-Select **Validate** after important test operations. A successful validation checks archive structure, decompression, sizes, and hashes, but does not replace an independent backup.
+Use **Close CFS**, choose whether to commit or discard pending changes, and wait for cleanup. Reopen the same `.cfs` and verify the intended changes. If cleanup fails, CFS preserves and reports the exact mount path; follow [Data-safety guidance](DATA-SAFETY.md).
 
 ## Logs and bug reports
 
-- Select **Open Logs Folder**. Logs are under `%LOCALAPPDATA%\CFS\Logs`.
-- Select **Report Bug** to open the public CFS issue tracker. Remove private paths and personal information from logs before posting them.
-- Select **Check for Updates** to check immediately. CFS also checks no more than once every 24 hours at startup, verifies the setup SHA-256, and requires confirmation before install.
+- Logs are under `%LOCALAPPDATA%\CFS\Logs`.
+- Report bugs through the public CFS issue tracker. Remove private paths and personal information from logs before posting them.
+- `Cfs.App` remains optional for diagnostics and settings; it is not part of normal archive creation or Explorer use.
 - Use the packaged [bug-report template](BUG-REPORT-TEMPLATE.md).
 
 ## Uninstall

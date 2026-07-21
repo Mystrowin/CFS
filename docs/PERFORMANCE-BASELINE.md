@@ -1,4 +1,4 @@
-# CFS 0.2.0 Beta performance baseline
+# CFS 0.3.1 Beta performance baseline
 
 ## Purpose
 
@@ -6,30 +6,30 @@ This baseline detects gross regressions in the limited beta workflow. It is not 
 
 ## Measured environment
 
-- Timestamp: 2026-07-16 UTC
+- Timestamp: 2026-07-19 UTC
 - Windows: Microsoft Windows NT 10.0.26200.0
 - Logical processor count exposed to the harness: 4
-- Build: CFS 0.2.0 Beta (`0.2.0-Beta-cb57dca0be944fb2a8c6a95b5bd38188`)
+- Build: CFS 0.3.1 Beta (`0.3.1-Beta-3f18661f8d8445ba9c080c798ee284c8`)
 - Workload: 1,000 independent 256-byte files plus three independent 8 MiB binary files
 
 ## Results
 
 | Stage | Measured time |
 | --- | ---: |
-| Create archive containing 1,000 small files and three large files | 10.944 s |
-| Load manifest metadata only | 0.004 s |
-| Project namespace and reach ProjFS mount readiness | 0.123 s |
-| Hydrate one requested file with unrelated entries untouched | 0.029 s |
-| Concurrent nonzero-offset reads from two large files | 0.285 s |
-| Create edit-session ProjFS mount | 0.308 s |
-| Save overwrite, create, rename, and delete workload | 10.453 s |
-| Unmount and remove temporary mount | 0.994 s |
-| Validate edited archive | 0.195 s |
-| Reopen and verify persisted edits | 0.203 s |
+| Create archive containing 1,000 small files and three large files | 3.772 s |
+| Load manifest metadata only | 0.006 s |
+| Project namespace and reach ProjFS mount readiness | 0.067 s |
+| Hydrate one requested file with unrelated entries untouched | 0.015 s |
+| Concurrent nonzero-offset reads from two large files | 0.069 s |
+| Create edit-session ProjFS mount | 0.057 s |
+| Save overwrite, create, rename, and delete workload | 11.598 s |
+| Unmount and remove temporary mount | 0.631 s |
+| Validate edited archive | 0.313 s |
+| Reopen and verify persisted edits | 0.004 s |
 
-Peak process working set was 311,005,184 bytes (approximately 297 MiB). The save retained the unchanged test file's compressed block at offset `25170030`. The harness confirmed isolated single-file hydration, exact ranged/concurrent reads, validation, reopen persistence, and workspace cleanup.
+Peak process working set was 279,269,376 bytes (approximately 266 MiB). The save retained the unchanged test file's compressed block at offset `25170030`. The harness confirmed isolated single-file hydration, exact ranged/concurrent reads, validation, reopen persistence, and workspace cleanup.
 
-The machine-readable result is generated as `dist/CFS-0.2.0-Beta-performance.json` and is release evidence, not a required runtime dependency.
+The machine-readable result is generated as `dist/CFS-0.3.1-Beta-performance.json` and is release evidence, not a required runtime dependency.
 
 ## Regression ceilings
 
@@ -48,5 +48,5 @@ Run the Release harness from the repository root:
 
 ```powershell
 & "C:\Program Files\dotnet\dotnet.exe" build .\tests\Cfs.Performance\Cfs.Performance.csproj -c Release
-& "C:\Program Files\dotnet\dotnet.exe" .\tests\Cfs.Performance\bin\Release\net8.0\Cfs.Performance.dll .\dist\CFS-0.2.0-Beta-performance.json
+& "C:\Program Files\dotnet\dotnet.exe" .\tests\Cfs.Performance\bin\Release\net8.0\Cfs.Performance.dll .\dist\CFS-0.3.1-Beta-performance.json
 ```

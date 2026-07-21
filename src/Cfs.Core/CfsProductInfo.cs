@@ -14,7 +14,7 @@ public static class CfsProductInfo
 
     public const string BugReportDestination = "https://github.com/Mystrowin/CFS/issues";
     public const string UpdateManifestDestination = "https://raw.githubusercontent.com/Mystrowin/CFS/main/update.json";
-    public const string VersionNumber = "0.3.0";
+    public const string VersionNumber = "0.3.1";
 
     private static readonly Assembly ProductAssembly = typeof(CfsProductInfo).Assembly;
 

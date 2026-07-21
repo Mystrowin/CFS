@@ -21,6 +21,18 @@ public static class CfsShellRegistration
         return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" compress \"%1\"";
     }
 
+    public static string BuildCreateHereCommand(string commandClientExecutablePath)
+    {
+        _ = BuildOpenCommand(commandClientExecutablePath);
+        return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" create-here \"%V\"";
+    }
+
+    public static string BuildCreateInFolderCommand(string commandClientExecutablePath)
+    {
+        _ = BuildOpenCommand(commandClientExecutablePath);
+        return $"\"{Path.GetFullPath(commandClientExecutablePath)}\" create-here \"%1\"";
+    }
+
     public static string BuildCloseCommand(string commandClientExecutablePath)
     {
         _ = BuildOpenCommand(commandClientExecutablePath);

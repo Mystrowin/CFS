@@ -22,6 +22,8 @@ internal static class CfsCommandClient
     {
         try
         {
+            if (args.Length > 0 && string.Equals(args[0], "create-here", StringComparison.OrdinalIgnoreCase))
+                return RunCreateHere(args);
             var request = Parse(args);
             var pipeName = BrokerPipeName();
             if (request.Command is "compress" or "extract")
@@ -74,6 +76,81 @@ internal static class CfsCommandClient
             ShowError($"CFS command client failed: {ex.Message}");
             return 2;
         }
+    }
+
+    private static int RunCreateHere(string[] args)
+    {
+        if (args.Length != 2)
+            throw new CommandClientException("Create CFS Archive requires one destination folder.");
+
+        var destinationFolder = ValidateExistingFolder(args[1]);
+        ApplicationConfiguration.Initialize();
+        using var dialog = new SaveFileDialog
+        {
+            AddExtension = true,
+            CheckPathExists = true,
+            DefaultExt = "cfs",
+            DereferenceLinks = true,
+            FileName = NextAvailableArchiveName(destinationFolder),
+            Filter = "CFS archive (*.cfs)|*.cfs",
+            InitialDirectory = destinationFolder,
+            OverwritePrompt = true,
+            RestoreDirectory = true,
+            Title = "Create CFS Archive"
+        };
+
+        while (dialog.ShowDialog() == DialogResult.OK)
+        {
+            var archivePath = Path.GetFullPath(dialog.FileName);
+            if (!string.Equals(Path.GetExtension(archivePath), ".cfs", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowError("A CFS archive name must end in .cfs.");
+                continue;
+            }
+            if (File.Exists(archivePath) || Directory.Exists(archivePath))
+            {
+                ShowError("CFS will not replace an existing file or folder. Choose a new archive name.");
+                continue;
+            }
+
+            var pipeName = BrokerPipeName();
+            var create = new ClientRequest(ProtocolVersion, "create-empty", null, null, archivePath,
+                Guid.NewGuid().ToString("N"), null, null, null, null);
+            var created = SendOrStartAsync(pipeName, create).GetAwaiter().GetResult();
+            if (!created.Success) return 2;
+
+            var open = new ClientRequest(ProtocolVersion, "open", archivePath, null, null,
+                Guid.NewGuid().ToString("N"), null, null, null, null);
+            return RunAsync(pipeName, open).GetAwaiter().GetResult();
+        }
+
+        return 0;
+    }
+
+    private static string ValidateExistingFolder(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path.StartsWith("-", StringComparison.Ordinal)
+            || Uri.TryCreate(path, UriKind.Absolute, out var uri) && !uri.IsFile)
+            throw new CommandClientException("Create CFS Archive requires a local destination folder.");
+        var full = Path.GetFullPath(path);
+        if (full.StartsWith(@"\\.\", StringComparison.Ordinal) || full.StartsWith(@"\\?\", StringComparison.Ordinal))
+            throw new CommandClientException("CFS does not accept device or shell namespace paths.");
+        if (!Directory.Exists(full))
+            throw new CommandClientException("The selected CFS destination folder no longer exists.");
+        return full;
+    }
+
+    private static string NextAvailableArchiveName(string destinationFolder)
+    {
+        const string baseName = "New CFS Archive";
+        for (var suffix = 0; suffix < 10_000; suffix++)
+        {
+            var name = suffix == 0 ? $"{baseName}.cfs" : $"{baseName} ({suffix}).cfs";
+            if (!File.Exists(Path.Combine(destinationFolder, name))
+                && !Directory.Exists(Path.Combine(destinationFolder, name)))
+                return name;
+        }
+        throw new CommandClientException("This folder already contains too many default CFS archive names. Enter a different name.");
     }
 
     private static int RunCloseWorkflow(string pipeName, ClientRequest closeRequest)

@@ -43,6 +43,8 @@ if (-not $Unregister -and -not (Test-Path -LiteralPath $resolvedTemplatePath)) {
 
 $openCommand = '"' + $resolvedCommandClientPath + '" open "%1"'
 $compressCommand = '"' + $resolvedCommandClientPath + '" compress "%1"'
+$createHereCommand = '"' + $resolvedCommandClientPath + '" create-here "%V"'
+$createInFolderCommand = '"' + $resolvedCommandClientPath + '" create-here "%1"'
 $closeCommand = '"' + $resolvedCommandClientPath + '" close "%1"'
 $extractCommand = '"' + $resolvedCommandClientPath + '" extract "%1"'
 $commitCommand = '"' + $resolvedCommandClientPath + '" commit "%1"'
@@ -58,6 +60,10 @@ if ($DryRun) {
     Write-Output "SHELLNEW_FILENAME=$resolvedTemplatePath"
     Write-Output 'FOLDER_VERB_LABEL=Compress to CFS'
     Write-Output "FOLDER_VERB_COMMAND=$compressCommand"
+    Write-Output 'CREATE_HERE_VERB_LABEL=Create empty CFS archive here'
+    Write-Output "CREATE_HERE_VERB_COMMAND=$createHereCommand"
+    Write-Output 'CREATE_IN_FOLDER_VERB_LABEL=Create empty CFS archive inside'
+    Write-Output "CREATE_IN_FOLDER_VERB_COMMAND=$createInFolderCommand"
     Write-Output 'CLOSE_VERB_LABEL=Close CFS'
     Write-Output "CLOSE_VERB_COMMAND=$closeCommand"
     Write-Output 'EXTRACT_VERB_LABEL=Extract entire CFS archive'
@@ -179,6 +185,28 @@ if ($Unregister) {
         $verbKey.Dispose()
     }
 
+    $createVerbPaths = @(
+        @{ Path = ClassKey 'Directory\Background\shell\CFS.Create'; Command = $createHereCommand; Label = 'Create empty CFS archive here' },
+        @{ Path = ClassKey 'Directory\shell\CFS.Create'; Command = $createInFolderCommand; Label = 'Create empty CFS archive inside' })
+    foreach ($createVerb in $createVerbPaths) {
+        $createCommandPath = $createVerb.Path + '\command'
+        $createCommandKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($createCommandPath)
+        $registeredCreate = if ($null -ne $createCommandKey) { [string]$createCommandKey.GetValue($null) } else { '' }
+        if ($null -ne $createCommandKey) { $createCommandKey.Dispose() }
+        if ($registeredCreate.Equals($createVerb.Command, [StringComparison]::OrdinalIgnoreCase)) {
+            $ownedKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($createCommandPath, $true)
+            $ownedKey.DeleteValue('', $false); $ownedKey.Dispose()
+        }
+        $createVerbKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($createVerb.Path, $true)
+        if ($null -ne $createVerbKey) {
+            if ([string]$createVerbKey.GetValue($null) -eq $createVerb.Label) { $createVerbKey.DeleteValue('', $false) }
+            if ([string]$createVerbKey.GetValue('Icon') -eq ($resolvedCommandClientPath + ',0')) { $createVerbKey.DeleteValue('Icon', $false) }
+            $createVerbKey.Dispose()
+        }
+        Remove-EmptyKey $createCommandPath
+        Remove-EmptyKey $createVerb.Path
+    }
+
     $extensionPath = ClassKey '.cfs'
     $extension = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($extensionPath, $true)
     if ($null -ne $extension) {
@@ -187,7 +215,11 @@ if ($Unregister) {
     }
     foreach ($key in @(
         $openKeyPath, (ClassKey 'CFS.Archive\shell\open'), $closeCommandPath, $closeVerbPath, $extractCommandPath, $extractVerbPath, (ClassKey 'CFS.Archive\shell'), (ClassKey 'CFS.Archive\DefaultIcon'),
-        $typePath, ($verbPath + '\command'), $verbPath, (ClassKey 'Directory\shell'), (ClassKey 'Directory'),
+        $typePath, ($verbPath + '\command'), $verbPath,
+        (ClassKey 'Directory\Background\shell\CFS.Create\command'), (ClassKey 'Directory\Background\shell\CFS.Create'),
+        (ClassKey 'Directory\Background\shell'), (ClassKey 'Directory\Background'),
+        (ClassKey 'Directory\shell\CFS.Create\command'), (ClassKey 'Directory\shell\CFS.Create'),
+        (ClassKey 'Directory\shell'), (ClassKey 'Directory'),
         $shellNewPath, $extensionPath)) { Remove-EmptyKey $key }
     Write-Host 'CFS-owned current-user shell entries were removed when their exact values matched.'
     return
@@ -201,6 +233,14 @@ $commandKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'CF
 $commandKey.SetValue($null, $openCommand); $commandKey.Dispose()
 $shellNewKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey '.cfs\ShellNew'))
 $shellNewKey.SetValue('FileName', $resolvedTemplatePath); $shellNewKey.Dispose()
+$createHereVerbKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'Directory\Background\shell\CFS.Create'))
+$createHereVerbKey.SetValue($null, 'Create empty CFS archive here'); $createHereVerbKey.SetValue('Icon', $resolvedCommandClientPath + ',0'); $createHereVerbKey.Dispose()
+$createHereCommandKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'Directory\Background\shell\CFS.Create\command'))
+$createHereCommandKey.SetValue($null, $createHereCommand); $createHereCommandKey.Dispose()
+$createInFolderVerbKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'Directory\shell\CFS.Create'))
+$createInFolderVerbKey.SetValue($null, 'Create empty CFS archive inside'); $createInFolderVerbKey.SetValue('Icon', $resolvedCommandClientPath + ',0'); $createInFolderVerbKey.Dispose()
+$createInFolderCommandKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'Directory\shell\CFS.Create\command'))
+$createInFolderCommandKey.SetValue($null, $createInFolderCommand); $createInFolderCommandKey.Dispose()
 $verbKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'Directory\shell\CFS.Compress'))
 $verbKey.SetValue($null, 'Compress to CFS'); $verbKey.SetValue('Icon', $resolvedCommandClientPath + ',0'); $verbKey.Dispose()
 $verbCommandKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey 'Directory\shell\CFS.Compress\command'))
@@ -226,7 +266,7 @@ foreach ($verb in @(
     $newCommandKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey((ClassKey ('CFS.Archive\shell\' + $verb.Name + '\command')))
     $newCommandKey.SetValue($null, $verb.Command); $newCommandKey.Dispose()
 }
-Write-Host 'CFS shell open, ShellNew, Compress to CFS, and Close CFS entries were registered for the current user.'
+Write-Host 'CFS shell open, create, ShellNew, Compress to CFS, and Close CFS entries were registered for the current user.'
 Write-Host $openCommand
 Write-Host $compressCommand
 Write-Host $closeCommand

@@ -400,14 +400,16 @@ static Task ShellCommandsUseCommandClientAndAreQuoted()
     var command = CfsShellRegistration.BuildOpenCommand(broker);
     Assert(command == $"\"{Path.GetFullPath(broker)}\" open \"%1\"", "command-client shell command quoting changed");
     Assert(command.Count(ch => ch == '"') == 4 && command.Contains(" open ", StringComparison.Ordinal), "command is not one quoted command-client invocation");
-    Assert(CfsShellRegistration.BuildCommitCommand(broker) == $"\"{Path.GetFullPath(broker)}\" commit \"%1\""
+    Assert(CfsShellRegistration.BuildCreateHereCommand(broker) == $"\"{Path.GetFullPath(broker)}\" create-here \"%V\""
+        && CfsShellRegistration.BuildCreateInFolderCommand(broker) == $"\"{Path.GetFullPath(broker)}\" create-here \"%1\""
+        && CfsShellRegistration.BuildCommitCommand(broker) == $"\"{Path.GetFullPath(broker)}\" commit \"%1\""
         && CfsShellRegistration.BuildDiscardCommand(broker) == $"\"{Path.GetFullPath(broker)}\" discard \"%1\""
         && CfsShellRegistration.BuildStatusCommand(broker) == $"\"{Path.GetFullPath(broker)}\" status \"%1\""
         && CfsShellRegistration.BuildRecoverCommand(broker) == $"\"{Path.GetFullPath(broker)}\" recover \"%1\""
         && CfsShellRegistration.BuildRecoveryStatusCommand(broker) == $"\"{Path.GetFullPath(broker)}\" recovery-status \"%1\""
         && CfsShellRegistration.BuildDiscardRecoveryCommand(broker) == $"\"{Path.GetFullPath(broker)}\" discard-recovery \"%1\""
         && CfsShellRegistration.BuildOpenReadOnlyCommand(broker) == $"\"{Path.GetFullPath(broker)}\" open-readonly \"%1\"",
-        "commit/discard/status/recovery shell command quoting changed");
+        "create/commit/discard/status/recovery shell command quoting changed");
     AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.CommandClient.exe", "Cfs.Broker.exe")), _ => true);
     AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.CommandClient.exe", "Cfs.App.exe")), _ => true);
     AssertThrows<ArgumentException>(() => CfsShellRegistration.BuildOpenCommand(broker.Replace("Cfs.CommandClient.exe", "Cfs.Cli.exe")), _ => true);
@@ -422,14 +424,16 @@ static Task ShellCommandsUseCommandClientAndAreQuoted()
     var dryRun = RunAssociationScript(root, dryRunBroker, template);
     Assert(dryRun.ExitCode == 0 && dryRun.Output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
         .Contains("OPEN_COMMAND=" + CfsShellRegistration.BuildOpenCommand(dryRunBroker)), "association dry-run did not emit the exact quoted broker open command");
-    Assert(dryRun.Output.Contains("COMMIT_VERB_COMMAND=" + CfsShellRegistration.BuildCommitCommand(dryRunBroker), StringComparison.Ordinal)
+    Assert(dryRun.Output.Contains("CREATE_HERE_VERB_COMMAND=" + CfsShellRegistration.BuildCreateHereCommand(dryRunBroker), StringComparison.Ordinal)
+        && dryRun.Output.Contains("CREATE_IN_FOLDER_VERB_COMMAND=" + CfsShellRegistration.BuildCreateInFolderCommand(dryRunBroker), StringComparison.Ordinal)
+        && dryRun.Output.Contains("COMMIT_VERB_COMMAND=" + CfsShellRegistration.BuildCommitCommand(dryRunBroker), StringComparison.Ordinal)
         && dryRun.Output.Contains("DISCARD_VERB_COMMAND=" + CfsShellRegistration.BuildDiscardCommand(dryRunBroker), StringComparison.Ordinal)
         && dryRun.Output.Contains("STATUS_VERB_COMMAND=" + CfsShellRegistration.BuildStatusCommand(dryRunBroker), StringComparison.Ordinal)
         && dryRun.Output.Contains("RECOVER_VERB_COMMAND=" + CfsShellRegistration.BuildRecoverCommand(dryRunBroker), StringComparison.Ordinal)
         && dryRun.Output.Contains("RECOVERY_STATUS_VERB_COMMAND=" + CfsShellRegistration.BuildRecoveryStatusCommand(dryRunBroker), StringComparison.Ordinal)
         && dryRun.Output.Contains("DISCARD_RECOVERY_VERB_COMMAND=" + CfsShellRegistration.BuildDiscardRecoveryCommand(dryRunBroker), StringComparison.Ordinal)
         && dryRun.Output.Contains("OPEN_READONLY_VERB_COMMAND=" + CfsShellRegistration.BuildOpenReadOnlyCommand(dryRunBroker), StringComparison.Ordinal),
-        "association dry-run omitted an exact commit/discard/status/recovery command");
+        "association dry-run omitted an exact create/commit/discard/status/recovery command");
     foreach (var forbidden in new[] { "Cfs.Broker.exe", "Cfs.App.exe", "Cfs.Cli.exe" })
     {
         var forbiddenPath = Path.Combine(workspace.Root, forbidden); File.Copy(builtBroker, forbiddenPath);
@@ -442,6 +446,9 @@ static Task ShellCommandsUseCommandClientAndAreQuoted()
         && mainForm.Contains("CfsShellRegistration.BuildOpenCommand(brokerPath)", StringComparison.Ordinal), "MainForm does not build the exact sibling command-client command");
     var installer = File.ReadAllText(Path.Combine(root, "packaging", "CFS-Setup.iss"));
     Assert(installer.Contains("ValueData: \"\"\"{app}\\{#CommandClientExe}\"\" open \"\"%1\"\"\"", StringComparison.Ordinal), "installer open command is not exact command-client quoting");
+    Assert(installer.Contains("ValueData: \"\"\"{app}\\{#CommandClientExe}\"\" create-here \"\"%V\"\"\"", StringComparison.Ordinal)
+        && installer.Contains("ValueData: \"\"\"{app}\\{#CommandClientExe}\"\" create-here \"\"%1\"\"\"", StringComparison.Ordinal),
+        "installer create commands are not exact command-client quoting");
     Assert(installer.Contains("InstalledCommand := '\"' + ExpandConstant('{app}\\{#CommandClientExe}') + '\" open \"%1\"';", StringComparison.Ordinal), "installer uninstall ownership check is not the same exact command-client command");
     Assert(!mainForm.Contains("Cfs.Broker.exe\" \"%1", StringComparison.OrdinalIgnoreCase) && !installer.Contains("Cfs.Broker.exe\" \"%1", StringComparison.OrdinalIgnoreCase), "a first-party registration path still assigns open to Cfs.Broker");
     return Task.CompletedTask;

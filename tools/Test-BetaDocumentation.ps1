@@ -1,6 +1,14 @@
 $ErrorActionPreference = 'Stop'
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+[xml]$buildProps = Get-Content -Raw -LiteralPath (Join-Path $root 'Directory.Build.props')
+$version = [string]$buildProps.Project.PropertyGroup.CfsVersion
+$label = [string]$buildProps.Project.PropertyGroup.CfsReleaseLabel
+if ($version -notmatch '^\d+\.\d+\.\d+$' -or [string]::IsNullOrWhiteSpace($label)) {
+    throw 'Directory.Build.props must define a semantic CfsVersion and non-empty CfsReleaseLabel.'
+}
+$centralIdentity = "CFS $version $label"
+$releaseNotesPath = "docs/RELEASE-NOTES-$version-$($label.ToUpperInvariant()).md"
 $packageDocuments = @(
     'README.md',
     'docs/BETA-QUICK-START.md',
@@ -9,7 +17,7 @@ $packageDocuments = @(
     'docs/KNOWN-LIMITATIONS.md',
     'docs/BUG-REPORT-TEMPLATE.md',
     'docs/CONTRIBUTOR-ACCESS-POLICY.md',
-    'docs/RELEASE-NOTES-0.1.0-BETA.md',
+    $releaseNotesPath,
     'docs/on-demand-mount.md',
     'docs/compression.md',
     'docs/PERFORMANCE-BASELINE.md'
@@ -35,11 +43,7 @@ function Read-RepoFile([string]$RelativePath) {
     return Get-Content -Raw -LiteralPath $path
 }
 
-$props = Read-RepoFile 'Directory.Build.props'
-$versionMatch = [regex]::Match($props, '<CfsVersion>([^<]+)</CfsVersion>')
-$labelMatch = [regex]::Match($props, '<CfsReleaseLabel>([^<]+)</CfsReleaseLabel>')
-$centralIdentity = if ($versionMatch.Success -and $labelMatch.Success) { "CFS $($versionMatch.Groups[1].Value) $($labelMatch.Groups[1].Value)" } else { '' }
-Test-Requirement 'central identity is CFS 0.1.0 Beta' ($centralIdentity -eq 'CFS 0.1.0 Beta')
+Test-Requirement "central identity is $centralIdentity" ($centralIdentity -eq "CFS $version $label")
 
 $contents = @{}
 foreach ($document in $packageDocuments) {
@@ -55,16 +59,16 @@ foreach ($document in $packageDocuments) {
 
 $coverage = @{
     'quick start supported Windows and ProjFS' = @('docs/BETA-QUICK-START.md', 'Supported Windows requirements', 'Client-ProjFS')
-    'quick start first launch and acknowledgement' = @('docs/BETA-QUICK-START.md', 'First launch', 'acknowledgement')
-    'quick start create open mount edit save unmount validate' = @('docs/BETA-QUICK-START.md', 'Create or open', 'Mount and browse', 'Edit and save', 'Unmount and reopen', 'Validate')
-    'quick start logs reports uninstall' = @('docs/BETA-QUICK-START.md', 'Open Logs Folder', 'Report Bug', 'Uninstall')
-    'installation extraction and paths with spaces' = @('docs/INSTALL-UNINSTALL.md', 'Install by extraction', 'Paths containing spaces')
+    'quick start app-free Explorer creation' = @('docs/BETA-QUICK-START.md', 'Create or open an archive', 'Create empty CFS archive here', 'None of these workflows launches or requires `Cfs.App`')
+    'quick start mount edit close and reopen workflow' = @('docs/BETA-QUICK-START.md', 'Mount and browse', 'Edit and save', 'Close CFS', 'Unmount and reopen')
+    'quick start logs reports uninstall' = @('docs/BETA-QUICK-START.md', '%LOCALAPPDATA%\CFS\Logs', 'issue tracker', 'Uninstall')
+    'installation setup portable and paths with spaces' = @('docs/INSTALL-UNINSTALL.md', 'Recommended machine-wide setup', 'Portable install by extraction', 'Paths containing spaces')
     'association is reversible' = @('docs/INSTALL-UNINSTALL.md', 'Reverse the file association', 'reg.exe delete')
     'data safety backups and non-critical files' = @('docs/DATA-SAFETY.md', 'Backups and non-critical files', 'independent backup')
     'data safety validation and failed save' = @('docs/DATA-SAFETY.md', 'Validate an archive', 'After a failed save')
     'data safety preserved mount and private logs' = @('docs/DATA-SAFETY.md', 'Preserved mount folders', 'Privacy-safe log sharing')
     'known limitations are honest' = @('docs/KNOWN-LIMITATIONS.md', 'not production-ready', 'not guaranteed', 'explicit full extraction')
-    'release notes features ProjFS LZMA2 edits progress warning limitations reporting' = @('docs/RELEASE-NOTES-0.1.0-BETA.md', 'Beta status and warning', 'Major features', 'ProjFS behavior', 'per-file LZMA2', 'Supported edit operations', 'Progress and cancellation', 'Known limitations', 'Reporting')
+    'release notes describe app-free Explorer creation and safety' = @($releaseNotesPath, 'Explorer-first archive creation', 'without opening or depending on `Cfs.App`', 'production `create-empty` path', 'Safety and compatibility')
     'compatibility mode is current and explicit' = @('docs/on-demand-mount.md', 'Compatibility Mode (Full', 'not selected automatically', 'not on-demand ProjFS')
     'performance baseline records workload measurements thresholds and limitations' = @('docs/PERFORMANCE-BASELINE.md', '1,000', 'three independent 8 MiB', 'Peak process working set', 'Regression ceilings', 'Limitations', 'not a performance guarantee')
 }
@@ -102,7 +106,11 @@ $allDocumentation = ($contents.Values -join "`n")
 Test-Requirement 'GitHub issue destination is documented' ($allDocumentation.Contains('https://github.com/Mystrowin/CFS/issues', [StringComparison]::Ordinal))
 Test-Requirement 'no invented email address' (-not [regex]::IsMatch($allDocumentation, '[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}', 'IgnoreCase'))
 $urls = [regex]::Matches($allDocumentation, 'https?://[^\s)]+') | ForEach-Object { $_.Value.TrimEnd('.', ',', '`') }
-$unexpectedUrls = @($urls | Where-Object { $_ -notmatch '^https://www\.7-zip\.org/' -and $_ -notmatch '^https://github\.com/Mystrowin/CFS/' })
+$unexpectedUrls = @($urls | Where-Object {
+    $_ -notmatch '^https://www\.7-zip\.org/' -and
+    $_ -notmatch '^https://github\.com/Mystrowin/CFS(?:/|$)' -and
+    $_ -notmatch '^https://mystrowin\.github\.io/CFS(?:/|$)'
+})
 Test-Requirement 'only approved external domains are documented' ($unexpectedUrls.Count -eq 0)
 Test-Requirement 'no positive production-ready claim' (-not [regex]::IsMatch($allDocumentation, '(?<!not\s)production[- ]ready', 'IgnoreCase'))
 Test-Requirement 'no universal compatibility claim' (-not [regex]::IsMatch($allDocumentation, '(?:supports|guarantees|provides)\s+(?:universal|all-application)\s+compatibility', 'IgnoreCase'))
@@ -123,3 +131,4 @@ Write-Host "PACKAGE_DOCUMENT_COUNT=$($packageDocuments.Count)"
 $packageDocuments | ForEach-Object { Write-Host "PACKAGE_DOCUMENT=$_" }
 Write-Host "TOTAL_CHECKS=$($passes + $failures.Count) PASS=$passes FAIL=$($failures.Count)"
 if ($failures.Count -gt 0) { exit 1 }
+exit 0

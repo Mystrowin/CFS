@@ -347,6 +347,10 @@ static Task ShellRegistrationIsExactAndSafe()
             && dry.Output.Contains("SHELLNEW_FILENAME=" + Path.GetFullPath(template))
             && dry.Output.Contains("FOLDER_VERB_LABEL=Compress to CFS")
             && dry.Output.Contains("FOLDER_VERB_COMMAND=" + CfsShellRegistration.BuildCompressCommand(broker))
+            && dry.Output.Contains("CREATE_HERE_VERB_LABEL=Create empty CFS archive here")
+            && dry.Output.Contains("CREATE_HERE_VERB_COMMAND=" + CfsShellRegistration.BuildCreateHereCommand(broker))
+            && dry.Output.Contains("CREATE_IN_FOLDER_VERB_LABEL=Create empty CFS archive inside")
+            && dry.Output.Contains("CREATE_IN_FOLDER_VERB_COMMAND=" + CfsShellRegistration.BuildCreateInFolderCommand(broker))
             && dry.Output.Contains("EXTRACT_VERB_LABEL=Extract entire CFS archive")
             && dry.Output.Contains("EXTRACT_VERB_COMMAND=" + CfsShellRegistration.BuildExtractCommand(broker)), "dry-run registry values are not exact");
         Assert(RunScript(root, broker, template, basePath, false, false).ExitCode == 0, "isolated registration failed");
@@ -360,6 +364,9 @@ static Task ShellRegistrationIsExactAndSafe()
         Assert(retained.GetValue(null) is null, "unregister retained owned open command");
         Assert(Registry.CurrentUser.OpenSubKey(basePath + @"\.cfs") is null, "unregister retained owned extension/ShellNew keys");
         Assert(Registry.CurrentUser.OpenSubKey(basePath + @"\Directory\shell\CFS.Compress") is null, "unregister retained owned folder verb keys");
+        Assert(Registry.CurrentUser.OpenSubKey(basePath + @"\Directory\Background\shell\CFS.Create") is null
+            && Registry.CurrentUser.OpenSubKey(basePath + @"\Directory\shell\CFS.Create") is null,
+            "unregister retained owned create verb keys");
         Assert(Registry.CurrentUser.OpenSubKey(basePath + @"\CFS.Archive\shell\CFS.Extract") is null, "unregister retained owned extract verb keys");
 
         // A tree containing only exact CFS-owned values must prune completely.

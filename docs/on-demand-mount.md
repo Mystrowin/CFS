@@ -1,4 +1,4 @@
-# CFS 0.2.0 Beta on-demand ProjFS mount
+# CFS 0.3.1 Beta on-demand ProjFS mount
 
 CFS cannot safely hydrate ordinary files in a normal temporary directory on first
 open. Windows may hand an empty placeholder to an application before CFS can run.

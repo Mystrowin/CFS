@@ -1,4 +1,4 @@
-# CFS 0.2.0 Beta bug-report template
+# CFS 0.3.1 Beta bug-report template
 
 Bug-report destination: `https://github.com/Mystrowin/CFS/issues`
 

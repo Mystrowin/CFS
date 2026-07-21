@@ -477,11 +477,11 @@ static void ProjFsManualSaveThenUnmountSucceeds()
 
 static void BetaIdentityIsCentralizedAndConsistent()
 {
-    Assert(CfsProductInfo.ReleaseIdentity == "0.3.0 Beta", $"unexpected release identity: {CfsProductInfo.ReleaseIdentity}");
-    Assert(CfsProductInfo.DisplayName == "CFS 0.3.0 Beta", $"unexpected display name: {CfsProductInfo.DisplayName}");
+    Assert(CfsProductInfo.ReleaseIdentity == "0.3.1 Beta", $"unexpected release identity: {CfsProductInfo.ReleaseIdentity}");
+    Assert(CfsProductInfo.DisplayName == "CFS 0.3.1 Beta", $"unexpected display name: {CfsProductInfo.DisplayName}");
     Assert(CfsProductInfo.WindowTitle == CfsProductInfo.DisplayName, "window title diverged from central identity");
     Assert(CfsProductInfo.AcknowledgementKey == CfsProductInfo.ReleaseIdentity, "warning acknowledgement is not keyed to the release identity");
-    Assert(CfsProductInfo.BuildIdentifier.StartsWith("0.3.0-Beta-", StringComparison.Ordinal), $"build identifier lacks beta identity: {CfsProductInfo.BuildIdentifier}");
+    Assert(CfsProductInfo.BuildIdentifier.StartsWith("0.3.1-Beta-", StringComparison.Ordinal), $"build identifier lacks beta identity: {CfsProductInfo.BuildIdentifier}");
     Assert(CfsProductInfo.BetaInformation.Contains(CfsProductInfo.BetaSafetyWarning, StringComparison.Ordinal), "beta information omitted the backup warning");
     Assert(CfsProductInfo.BetaInformation.Contains(CfsProductInfo.BugReportDestination, StringComparison.Ordinal), "beta information omitted support/reporting instructions");
 }

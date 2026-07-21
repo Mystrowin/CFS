@@ -7,7 +7,7 @@
 #endif
 
 #define ProductName "CFS"
-#define ProductVersion "0.3.0"
+#define ProductVersion "0.3.1"
 #define ProductLabel "Beta"
 #define Publisher "Neeraj Pragnya Krishna Vasagiri"
 #define ProductExe "Cfs.CommandClient.exe"
@@ -33,7 +33,7 @@ ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 MinVersion=10.0.17763
 OutputDir={#OutputDir}
-OutputBaseFilename=CFS-0.3.0-Beta-Setup
+OutputBaseFilename=CFS-0.3.1-Beta-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -85,6 +85,12 @@ Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.OpenReadOnly"; Value
 Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.OpenReadOnly"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
 Root: HKLM; Subkey: "Software\Classes\CFS.Archive\shell\CFS.OpenReadOnly\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" open-readonly ""%1"""
 Root: HKLM; Subkey: "Software\Classes\.cfs\ShellNew"; ValueType: string; ValueName: "FileName"; ValueData: "{app}\ShellNew\CFS-Empty.cfs"
+Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\CFS.Create"; ValueType: string; ValueName: ""; ValueData: "Create empty CFS archive here"
+Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\CFS.Create"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
+Root: HKLM; Subkey: "Software\Classes\Directory\Background\shell\CFS.Create\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" create-here ""%V"""
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Create"; ValueType: string; ValueName: ""; ValueData: "Create empty CFS archive inside"
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Create"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#CommandClientExe},0"
+Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Create\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" create-here ""%1"""
 Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress"; ValueType: string; ValueName: ""; ValueData: "Compress to CFS"
 Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#BrokerExe},0"
 Root: HKLM; Subkey: "Software\Classes\Directory\shell\CFS.Compress\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#CommandClientExe}"" compress ""%1"""
@@ -247,7 +253,7 @@ begin
   Result := False;
   if not IsWin64 then
   begin
-    MsgBox('CFS 0.3.0 Beta requires 64-bit Windows.', mbError, MB_OK);
+    MsgBox('CFS 0.3.1 Beta requires 64-bit Windows.', mbError, MB_OK);
     Exit;
   end;
 
@@ -308,6 +314,24 @@ begin
   RegDeleteKeyIfEmpty(HKLM, VerbPath);
 end;
 
+procedure RemoveOwnedShellVerb(VerbPath: String; LabelText: String;
+  InstalledVerbCommand: String);
+var
+  RegisteredValue: String;
+begin
+  if RegQueryStringValue(HKLM, VerbPath + '\command', '', RegisteredValue) and
+     (CompareText(RegisteredValue, InstalledVerbCommand) = 0) then
+    RegDeleteValue(HKLM, VerbPath + '\command', '');
+  if RegQueryStringValue(HKLM, VerbPath, '', RegisteredValue) and
+     (CompareText(RegisteredValue, LabelText) = 0) then
+    RegDeleteValue(HKLM, VerbPath, '');
+  if RegQueryStringValue(HKLM, VerbPath, 'Icon', RegisteredValue) and
+     (CompareText(RegisteredValue, ExpandConstant('{app}\{#CommandClientExe},0')) = 0) then
+    RegDeleteValue(HKLM, VerbPath, 'Icon');
+  RegDeleteKeyIfEmpty(HKLM, VerbPath + '\command');
+  RegDeleteKeyIfEmpty(HKLM, VerbPath);
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ExtensionOwner: String;
@@ -341,6 +365,12 @@ begin
   InstalledDiscardCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" discard "%1"';
   InstalledStatusCommand := '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" status "%1"';
   InstalledTemplate := ExpandConstant('{app}\ShellNew\CFS-Empty.cfs');
+  RemoveOwnedShellVerb('Software\Classes\Directory\Background\shell\CFS.Create',
+    'Create empty CFS archive here',
+    '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" create-here "%V"');
+  RemoveOwnedShellVerb('Software\Classes\Directory\shell\CFS.Create',
+    'Create empty CFS archive inside',
+    '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" create-here "%1"');
   RemoveOwnedArchiveVerb('CFS.Recover', 'Open recovery workspace',
     '"' + ExpandConstant('{app}\{#CommandClientExe}') + '" recover "%1"');
   RemoveOwnedArchiveVerb('CFS.RecoveryStatus', 'Show recovery status',
@@ -452,6 +482,9 @@ begin
   RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\CFS.Archive');
   RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\Directory\shell\CFS.Compress\command');
   RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\Directory\shell\CFS.Compress');
+  RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\Directory\Background\shell');
+  RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\Directory\Background');
+  RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\Directory\shell');
   RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\.cfs\ShellNew');
   RegDeleteKeyIfEmpty(HKLM, 'Software\Classes\.cfs');
 end;

@@ -23,6 +23,8 @@ $result = [ordered]@{
     effectiveClose = $null
     effectiveShellNew = $null
     effectiveCompress = $null
+    effectiveCreateHere = $null
+    effectiveCreateInFolder = $null
     shellNewValid = $false
     renamedArchive = $false
     firstBrokerPid = $null
@@ -253,7 +255,12 @@ try {
     if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall\{8A9237D3-6476-4F69-AE72-58221802FA45}_is1') {
         throw 'Refusing to replace an existing machine-wide CFS installation.'
     }
-    foreach ($path in @('Registry::HKEY_LOCAL_MACHINE\Software\Classes\.cfs', 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\CFS.Archive', 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\Directory\shell\CFS.Compress')) {
+    foreach ($path in @(
+        'Registry::HKEY_LOCAL_MACHINE\Software\Classes\.cfs',
+        'Registry::HKEY_LOCAL_MACHINE\Software\Classes\CFS.Archive',
+        'Registry::HKEY_LOCAL_MACHINE\Software\Classes\Directory\shell\CFS.Compress',
+        'Registry::HKEY_LOCAL_MACHINE\Software\Classes\Directory\Background\shell\CFS.Create',
+        'Registry::HKEY_LOCAL_MACHINE\Software\Classes\Directory\shell\CFS.Create')) {
         if (Test-Path -LiteralPath $path) { throw "Refusing pre-existing machine CFS association: $path" }
     }
     Assert-PreexistingAssociationIsSafe
@@ -273,13 +280,19 @@ try {
     $expectedOpen = '"' + $commandClientPath + '" open "%1"'
     $expectedClose = '"' + $commandClientPath + '" close "%1"'
     $expectedCompress = '"' + $commandClientPath + '" compress "%1"'
+    $expectedCreateHere = '"' + $commandClientPath + '" create-here "%V"'
+    $expectedCreateInFolder = '"' + $commandClientPath + '" create-here "%1"'
     $expectedTemplate = Join-Path $installPath 'ShellNew\CFS-Empty.cfs'
     $result.effectiveOpen = Get-DefaultValue 'Registry::HKEY_CLASSES_ROOT\CFS.Archive\shell\open\command'
     $result.effectiveClose = Get-DefaultValue 'Registry::HKEY_CLASSES_ROOT\CFS.Archive\shell\CFS.Close\command'
     $result.effectiveShellNew = [string](Get-ItemPropertyValue -LiteralPath 'Registry::HKEY_CLASSES_ROOT\.cfs\ShellNew' -Name 'FileName')
     $result.effectiveCompress = Get-DefaultValue 'Registry::HKEY_CLASSES_ROOT\Directory\shell\CFS.Compress\command'
+    $result.effectiveCreateHere = Get-DefaultValue 'Registry::HKEY_CLASSES_ROOT\Directory\Background\shell\CFS.Create\command'
+    $result.effectiveCreateInFolder = Get-DefaultValue 'Registry::HKEY_CLASSES_ROOT\Directory\shell\CFS.Create\command'
     if ($result.effectiveOpen -cne $expectedOpen -or $result.effectiveClose -cne $expectedClose -or
-        $result.effectiveShellNew -cne $expectedTemplate -or $result.effectiveCompress -cne $expectedCompress) {
+        $result.effectiveShellNew -cne $expectedTemplate -or $result.effectiveCompress -cne $expectedCompress -or
+        $result.effectiveCreateHere -cne $expectedCreateHere -or
+        $result.effectiveCreateInFolder -cne $expectedCreateInFolder) {
         throw 'Merged HKCR does not resolve every CFS shell surface to the isolated installed payload.'
     }
 

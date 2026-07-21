@@ -1,8 +1,8 @@
-# CFS 0.2.0 Beta data-safety guidance
+# CFS 0.3.1 Beta data-safety guidance
 
 ## Backups and non-critical files
 
-Keep a separate, independently accessible backup of every file placed in a `.cfs`. Use beta archives only for non-critical test files. CFS 0.2.0 Beta is not production-ready and must not be the sole storage location.
+Keep a separate, independently accessible backup of every file placed in a `.cfs`. Use beta archives only for non-critical test files. CFS 0.3.1 Beta is not production-ready and must not be the sole storage location.
 
 ## Validate an archive
 

@@ -560,6 +560,24 @@ public sealed class MainForm : Form
         {
             shellNewKey.SetValue("FileName", templatePath);
         }
+        using (var createHereVerb = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Directory\Background\shell\CFS.Create"))
+        {
+            createHereVerb.SetValue(null, "Create empty CFS archive here");
+            createHereVerb.SetValue("Icon", brokerPath + ",0");
+        }
+        using (var createHereCommand = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Directory\Background\shell\CFS.Create\command"))
+        {
+            createHereCommand.SetValue(null, CfsShellRegistration.BuildCreateHereCommand(brokerPath));
+        }
+        using (var createInFolderVerb = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Directory\shell\CFS.Create"))
+        {
+            createInFolderVerb.SetValue(null, "Create empty CFS archive inside");
+            createInFolderVerb.SetValue("Icon", brokerPath + ",0");
+        }
+        using (var createInFolderCommand = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Directory\shell\CFS.Create\command"))
+        {
+            createInFolderCommand.SetValue(null, CfsShellRegistration.BuildCreateInFolderCommand(brokerPath));
+        }
         using (var verbKey = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Directory\shell\CFS.Compress"))
         {
             verbKey.SetValue(null, "Compress to CFS");

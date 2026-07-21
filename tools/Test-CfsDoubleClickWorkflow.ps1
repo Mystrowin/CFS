@@ -19,16 +19,18 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $packageTemplate = $null
 if ([string]::IsNullOrWhiteSpace($PackageFolder)) {
     $broker = Join-Path $repoRoot 'src\Cfs.Broker\bin\Release\net8.0-windows\Cfs.Broker.exe'
+    $commandClient = Join-Path $repoRoot 'src\Cfs.CommandClient\bin\Release\net8.0-windows\Cfs.CommandClient.exe'
     $registrationScript = Join-Path $repoRoot 'tools\Register-CfsFileAssociation.ps1'
 }
 else {
     $PackageFolder = (Resolve-Path -LiteralPath $PackageFolder).Path
     $broker = Join-Path $PackageFolder 'Cfs.Broker.exe'
+    $commandClient = Join-Path $PackageFolder 'Cfs.CommandClient.exe'
     $registrationScript = Join-Path $PackageFolder 'Register-CfsFileAssociation.ps1'
     $packageTemplate = Join-Path $PackageFolder 'ShellNew\CFS-Empty.cfs'
 }
 $cli = Join-Path $repoRoot 'src\Cfs.Cli\bin\Release\net8.0\Cfs.Cli.exe'
-foreach ($path in @($broker, $cli, $registrationScript)) {
+foreach ($path in @($broker, $commandClient, $cli, $registrationScript)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Required workflow input is missing: $path" }
 }
 
@@ -121,22 +123,26 @@ try {
     & $cli validate $template | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'ShellNew template fixture is not a valid CFS1 archive.' }
 
-    $expectedOpen = '"' + [IO.Path]::GetFullPath($broker) + '" open "%1"'
-    $expectedCompress = '"' + [IO.Path]::GetFullPath($broker) + '" compress "%1"'
-    $expectedClose = '"' + [IO.Path]::GetFullPath($broker) + '" close "%1"'
-    $dryRun = & $registrationScript -BrokerPath $broker -EmptyTemplatePath $template -RegistryBasePath $registryBase -DryRun
+    $expectedOpen = '"' + [IO.Path]::GetFullPath($commandClient) + '" open "%1"'
+    $expectedCompress = '"' + [IO.Path]::GetFullPath($commandClient) + '" compress "%1"'
+    $expectedCreateHere = '"' + [IO.Path]::GetFullPath($commandClient) + '" create-here "%V"'
+    $expectedCreateInFolder = '"' + [IO.Path]::GetFullPath($commandClient) + '" create-here "%1"'
+    $expectedClose = '"' + [IO.Path]::GetFullPath($commandClient) + '" close "%1"'
+    $dryRun = & $registrationScript -CommandClientPath $commandClient -EmptyTemplatePath $template -RegistryBasePath $registryBase -DryRun
     if ($LASTEXITCODE -ne 0) { throw 'Association dry-run failed.' }
-    foreach ($expectedLine in @("OPEN_COMMAND=$expectedOpen", "SHELLNEW_FILENAME=$([IO.Path]::GetFullPath($template))", "FOLDER_VERB_COMMAND=$expectedCompress", "CLOSE_VERB_COMMAND=$expectedClose")) {
+    foreach ($expectedLine in @("OPEN_COMMAND=$expectedOpen", "SHELLNEW_FILENAME=$([IO.Path]::GetFullPath($template))", "FOLDER_VERB_COMMAND=$expectedCompress", "CREATE_HERE_VERB_COMMAND=$expectedCreateHere", "CREATE_IN_FOLDER_VERB_COMMAND=$expectedCreateInFolder", "CLOSE_VERB_COMMAND=$expectedClose")) {
         if ($dryRun -notcontains $expectedLine) { throw "Association dry-run omitted: $expectedLine" }
     }
 
-    & $registrationScript -BrokerPath $broker -EmptyTemplatePath $template -RegistryBasePath $registryBase
+    & $registrationScript -CommandClientPath $commandClient -EmptyTemplatePath $template -RegistryBasePath $registryBase
     if ($LASTEXITCODE -ne 0) { throw 'Isolated association registration failed.' }
     Assert-Equal (Read-RegistryValue "$registryBase\.cfs") 'CFS.Archive' '.cfs ProgID'
     Assert-Equal (Read-RegistryValue "$registryBase\CFS.Archive") 'CFS Compressed Folder' 'CFS display label'
     Assert-Equal (Read-RegistryValue "$registryBase\CFS.Archive\shell\open\command") $expectedOpen 'open command'
     Assert-Equal (Read-RegistryValue "$registryBase\.cfs\ShellNew" 'FileName') ([IO.Path]::GetFullPath($template)) 'ShellNew FileName'
     Assert-Equal (Read-RegistryValue "$registryBase\Directory\shell\CFS.Compress\command") $expectedCompress 'folder Compress to CFS command'
+    Assert-Equal (Read-RegistryValue "$registryBase\Directory\Background\shell\CFS.Create\command") $expectedCreateHere 'background Create CFS command'
+    Assert-Equal (Read-RegistryValue "$registryBase\Directory\shell\CFS.Create\command") $expectedCreateInFolder 'folder Create CFS command'
     Assert-Equal (Read-RegistryValue "$registryBase\CFS.Archive\shell\CFS.Close\command") $expectedClose 'Close CFS command'
     if ($expectedOpen -match 'Cfs\.(App|Cli)') { throw 'The shell open command incorrectly targets App or CLI.' }
 
@@ -193,7 +199,7 @@ finally {
             }
         } catch { }
     }
-    & $registrationScript -BrokerPath $broker -EmptyTemplatePath $template -RegistryBasePath $registryBase -Unregister 2>$null | Out-Null
+    & $registrationScript -CommandClientPath $commandClient -EmptyTemplatePath $template -RegistryBasePath $registryBase -Unregister 2>$null | Out-Null
     Remove-Item -LiteralPath "Registry::HKEY_CURRENT_USER\$registryBase" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $Workspace -Recurse -Force -ErrorAction SilentlyContinue
 }
