@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Arqivexa — Page Moved</title>
+</head>
+<body>
+  <p>This CFS URL has moved to the matching Arqivexa path.</p>
+  <script>
+    (function () {
+      var oldPrefix = '/CFS/';
+      var newPrefix = '/Arqivexa/';
+      var path = location.pathname;
+      var suffix = path.indexOf(oldPrefix) === 0 ? path.slice(oldPrefix.length) : '';
+      var target = 'https://mystrowin.github.io' + newPrefix + suffix + location.search + location.hash;
+      var link = document.createElement('a');
+      link.href = target;
+      link.textContent = target;
+      document.body.appendChild(document.createElement('p')).appendChild(link);
+      location.replace(target);
+    }());
+  </script>
+</body>
+</html>
