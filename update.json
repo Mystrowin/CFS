@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "version": "0.5.0",
+  "releaseLabel": "Stable",
+  "channel": "stable",
+  "architecture": "x64",
+  "publishedUtc": "2026-07-29T19:34:52Z",
+  "minimumWindowsBuild": 22000,
+  "setupUrl": "https://github.com/Mystrowin/Arqivexa/releases/download/v0.5.0/CFS-0.5.0-Stable-Setup.exe",
+  "sha256": "b89a650b96e3dfe981a28b2ff13888cbfef30ec8873f2af77955a1ead98fb46a",
+  "signerThumbprint": "3128136912D1492C0727365B62D833C54C9B0CF4",
+  "signerPublicKeySha256": "ff0906e14f8c546bf139217ed024eef448bd2ac35bc77c9fcb1ebeb7a5ae95ba",
+  "releaseNotesUrl": "https://github.com/Mystrowin/Arqivexa/releases/tag/v0.5.0",
+  "mandatory": false
+}
